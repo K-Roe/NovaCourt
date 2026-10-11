@@ -69,3 +69,5 @@ For a genuine OpenCode exchange on a known free model, run `$env:NC_V2_REAL_OPEN
 The default `npm test` also launches an isolated Electron instance with the offline Astra fixture and verifies real PowerShell and OpenCode ConPTY sessions. It writes renderer screenshots to `test-results/m31-powershell-terminal-renderer.png` and `test-results/m31-opencode-terminal-renderer.png`. Those renderer captures omit the native Astra view; the separate fixture and live ChatGPT tests verify that view's bounds and lifecycle.
 
 For a real interactive OpenCode CLI exchange including a tool permission prompt, run `$env:NC_V2_REAL_TERMINAL_SMOKE='1'; npx playwright test tests/live-terminal.spec.ts --workers=1`. It types into the real CLI, switches models, and sends a prompt that triggers a `bash` tool call. It uses your configured provider and may incur charges, so it is skipped by default.
+#   N o v a C o u r t  
+ 
