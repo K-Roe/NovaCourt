@@ -15,6 +15,19 @@ export type NovaState = {
   busy: boolean
   deliveryUncertain: boolean
 }
+export type CourtParticipant = 'karl' | 'astra' | 'nova'
+export type CourtRecipient = CourtParticipant | 'court'
+export type CourtMessage = {
+  id: string
+  caseRef: string | null
+  sender: CourtParticipant
+  recipient: CourtRecipient
+  text: string
+  source: 'manual' | 'imported' | 'connected'
+  delivery: 'local' | 'awaiting-send' | 'sent' | 'unconfirmed'
+  createdAt: string
+  forwardedFrom: string | null
+}
 export type Participant = 'karl' | 'astra' | 'nova'
 export type PortraitFraming = { zoom: number; x: number; y: number }
 export type PortraitRecord = {
@@ -73,6 +86,11 @@ declare global {
       clearTerminal: () => Promise<TerminalState>
       writeTerminal: (id: string, data: string) => void
       resizeTerminal: (id: string, size: TerminalSize) => void
+      getCourtMessages: () => Promise<CourtMessage[]>
+      onCourtMessages: (callback: (messages: CourtMessage[]) => void) => () => void
+      appendCourtMessage: (input: { sender: CourtParticipant; recipient: CourtRecipient; text: string; source: 'manual' | 'imported'; caseRef?: string }) => Promise<CourtMessage>
+      forwardCourtMessage: (id: string, recipient: CourtRecipient) => Promise<CourtMessage>
+      markCourtDelivery: (id: string, delivery: CourtMessage['delivery']) => Promise<CourtMessage[]>
       getPortraits: () => Promise<PortraitState[]>
       onPortraitState: (callback: (state: PortraitState) => void) => () => void
       readPortraitImage: (participant: Participant) => Promise<string | null>

@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { OpenCodeService, validWorkspace } from './openCodeService.cjs'
+import { ConversationService } from './conversationService.cjs'
 import { PortraitService } from './portraitService.cjs'
 import { TerminalService } from './terminalService.cjs'
 
@@ -22,6 +23,7 @@ let lastBounds: Rectangle | null = null
 let novaService: OpenCodeService | null = null
 let terminalService: TerminalService | null = null
 let portraitService: PortraitService | null = null
+let conversationService: ConversationService | null = null
 let astraStatus: AstraStatus = fixtureMode
   ? { source: 'fixture', phase: 'loading', detail: 'Loading local fixture' }
   : { source: 'chatgpt', phase: 'loading', detail: 'Loading chatgpt.com' }
@@ -114,6 +116,12 @@ function createWindow() {
   )
   portraitService = new PortraitService(app.getPath('userData'), (state) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('portrait:state', state)
+  })
+  // The conversation service is constructed with no reference to the terminal or OpenCode services.
+  // That is the enforcement for "a discussion message never authorises execution": there is no object
+  // graph from a court message to a command, so no sequence of messages can produce one.
+  conversationService = new ConversationService(app.getPath('userData'), (messages) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('court:messages', messages)
   })
   const confirmTerminalStop = async (reason: string) => {
     if (!terminalService?.isRunning()) return true
@@ -212,6 +220,39 @@ function createWindow() {
   ipcMain.handle('terminal:clear', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return terminalService?.clear() })
   ipcMain.on('terminal:write', (event, id: unknown, data: unknown) => { if (trustedSender(event)) { try { terminalService?.write(id, data) } catch { /* Ignore stale or invalid input. */ } } })
   ipcMain.on('terminal:resize', (event, id: unknown, size: unknown) => { if (trustedSender(event)) { try { terminalService?.resize(id, size) } catch { /* Ignore stale or invalid dimensions. */ } } })
+  ipcMain.handle('court:messages', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return conversationService?.snapshot() })
+  ipcMain.handle('court:append', (event, input: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!conversationService) throw new Error('The conversation is unavailable')
+    const result = conversationService.append(input as Parameters<ConversationService['append']>[0])
+    if (!result.ok) throw new Error(result.reason)
+    return result.message
+  })
+  ipcMain.handle('court:forward', (event, id: unknown, recipient: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!conversationService) throw new Error('The conversation is unavailable')
+    if (typeof id !== 'string') throw new Error('No such message')
+    const original = conversationService.snapshot().find((message) => message.id === id)
+    if (!original) throw new Error('No such message')
+    // The original is never modified. A forward is a new message that names the one it came from.
+    const result = conversationService.append({
+      sender: original.sender,
+      recipient,
+      text: original.text,
+      source: 'manual',
+      caseRef: original.caseRef,
+      forwardedFrom: original.id
+    })
+    if (!result.ok) throw new Error(result.reason)
+    return result.message
+  })
+  ipcMain.handle('court:delivery', (event, id: unknown, delivery: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!conversationService) throw new Error('The conversation is unavailable')
+    const result = conversationService.markDelivery(id, delivery)
+    if (!result.ok) throw new Error(result.reason)
+    return conversationService.snapshot()
+  })
   ipcMain.handle('portrait:list', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return portraitService?.snapshot() })
   ipcMain.handle('portrait:image', (event, participant: unknown) => {
     if (!trustedSender(event)) throw new Error('Untrusted sender')
@@ -254,6 +295,8 @@ function createWindow() {
     terminalService = null
     portraitService?.close()
     portraitService = null
+    conversationService?.close()
+    conversationService = null
     novaService?.close()
     novaService = null
     for (const view of views.values()) if (!view.webContents.isDestroyed()) view.webContents.close()

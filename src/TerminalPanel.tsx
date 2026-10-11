@@ -13,6 +13,9 @@ export default function TerminalPanel({ mode, workspace }: { mode: TerminalMode;
   const stateRef = useRef<TerminalState>(initial)
   const [state, setState] = useState<TerminalState>(initial)
   const [error, setError] = useState<string | null>(null)
+  // The trust notice is the tallest fixed block above the screen. Collapsing it gives a short window
+  // back the rows it needs to run a real terminal; the warning itself stays one click away.
+  const [trustOpen, setTrustOpen] = useState(true)
   const title = mode === 'opencode' ? 'OpenCode Terminal' : 'PowerShell Terminal'
   const activeHere = state.mode === mode && state.status === 'running'
   const anotherActive = state.mode !== mode && (state.status === 'running' || state.status === 'stopping')
@@ -29,7 +32,12 @@ export default function TerminalPanel({ mode, workspace }: { mode: TerminalMode;
       if (!hostRef.current?.clientWidth || !hostRef.current?.clientHeight) return
       fit.fit()
       const current = stateRef.current
-      if (current.id && current.status === 'running' && current.mode === mode) window.novaCourt.resizeTerminal(current.id, { cols: terminal.cols, rows: terminal.rows })
+      // Clamp rather than skip. A short panel must still resize the PTY's width, but ConPTY throws on
+      // a degenerate height, so the floor is applied here and the PTY is never asked for fewer than
+      // five rows. Recording the clamped values keeps the PTY and the UI agreeing on one size.
+      const cols = Math.max(20, terminal.cols)
+      const rows = Math.max(5, terminal.rows)
+      if (current.id && current.status === 'running' && current.mode === mode) window.novaCourt.resizeTerminal(current.id, { cols, rows })
     }
     const observer = new ResizeObserver(resize)
     observer.observe(hostRef.current)
@@ -71,7 +79,9 @@ export default function TerminalPanel({ mode, workspace }: { mode: TerminalMode;
 
   return <div className="court-terminal-view">
     <div className="court-terminal-bar"><strong>{title}</strong><span className={`court-terminal-status ${state.status}`}>{state.mode === mode ? state.status.toUpperCase() : anotherActive ? 'OTHER TERMINAL ACTIVE' : 'NOT STARTED'}</span></div>
-    <div className="court-terminal-trust">DIRECT TERMINAL · HIGHER TRUST<br/>Commands and OpenCode tools run with Karl’s local account permissions. Nova Chat’s tool restrictions do not apply here. Choose your OpenCode model; provider charges may apply.</div>
+    {trustOpen
+      ? <div className="court-terminal-trust">DIRECT TERMINAL · HIGHER TRUST<br/>Commands and OpenCode tools run with Karl’s local account permissions. Nova Chat’s tool restrictions do not apply here. Choose your OpenCode model; provider charges may apply.<button className="court-terminal-trust-toggle" onClick={() => setTrustOpen(false)}>Hide</button></div>
+      : <button className="court-terminal-trust-collapsed" onClick={() => setTrustOpen(true)}>DIRECT TERMINAL · HIGHER TRUST · Nova Chat’s tool restrictions do not apply here</button>}
     <div className="court-terminal-workspace" title={workspace}>Workspace: {state.mode === mode && state.workspace ? state.workspace : workspace}</div>
     <div className="court-terminal-controls">
       <button onClick={() => run(() => window.novaCourt.startTerminal(mode, size()))} disabled={activeHere || anotherActive || state.status === 'stopping'}>Start</button>

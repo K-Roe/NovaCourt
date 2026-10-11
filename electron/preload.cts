@@ -46,6 +46,15 @@ contextBridge.exposeInMainWorld('novaCourt', {
   stopTerminal: () => ipcRenderer.invoke('terminal:stop'),
   restartTerminal: (mode: unknown, size: unknown) => ipcRenderer.invoke('terminal:restart', mode, size),
   clearTerminal: () => ipcRenderer.invoke('terminal:clear'),
+  getCourtMessages: () => ipcRenderer.invoke('court:messages'),
+  onCourtMessages: (callback: (messages: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, messages: unknown) => callback(messages)
+    ipcRenderer.on('court:messages', listener)
+    return () => ipcRenderer.removeListener('court:messages', listener)
+  },
+  appendCourtMessage: (input: unknown) => ipcRenderer.invoke('court:append', input),
+  forwardCourtMessage: (id: unknown, recipient: unknown) => ipcRenderer.invoke('court:forward', id, recipient),
+  markCourtDelivery: (id: unknown, delivery: unknown) => ipcRenderer.invoke('court:delivery', id, delivery),
   getPortraits: () => ipcRenderer.invoke('portrait:list'),
   onPortraitState: (callback: (state: unknown) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)

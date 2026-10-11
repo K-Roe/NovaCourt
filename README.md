@@ -4,7 +4,7 @@ A fresh Electron, React, TypeScript, and Vite desktop application for a three-se
 
 ## Current milestone
 
-M0 through M4-V2 Phase A are implemented. The app opens directly to Karl, Astra, and Nova panels. Astra loads the real ChatGPT website inside a native `WebContentsView` using a dedicated `persist:chatgpt` Electron partition. Sign in manually in that panel; NovaCourt does not read account state or conversations. Karl's composer saves local notes. Nova offers chat-only discussion through a local OpenCode server and two separately controlled interactive terminals. Dividers resize the columns, and widths persist locally.
+M0 through M4-V2 Phase B are implemented. The app opens directly to Karl, Astra, and Nova panels. Astra loads the real ChatGPT website inside a native `WebContentsView` using a dedicated `persist:chatgpt` Electron partition. Sign in manually in that panel; NovaCourt does not read account state or conversations. Karl's composer saves local notes. Nova offers chat-only discussion through a local OpenCode server and two separately controlled interactive terminals. Dividers resize the columns, and widths persist locally.
 
 The offline Astra fixture is retained for automated layout tests. Nova Chat messages are sent only when Karl presses Send in that view. There is no automatic Astra relay; terminal activity starts only on Karl's direct action.
 
@@ -16,7 +16,21 @@ Upload accepts PNG, JPG, and WebP up to 4 MB and 4096px per side. The format is 
 
 A crop is chosen before saving: zoom from 1× to 3× and drag the image to set the focal point. The crop is stored as presentation metadata, so an image can be re-framed later without uploading it again. Replace, reset crop, and remove are all available, and every avatar updates immediately without a restart. A malformed index degrades to initials rather than failing to launch.
 
-Phase C approval states and automated ChatGPT forwarding are **not** implemented. See the milestone proposal: automated forwarding is gated on a recorded Terms-of-Service acceptance that does not exist yet.
+Phase C approval states and automated ChatGPT forwarding are **not** implemented. See "The shared court" below.
+
+## The shared court
+
+A resizable, collapsible strip below the three panels holds one conversation between all three seats. It carries an avatar, sender, timestamp, text, source, delivery status, and copy and forward controls on every message, and Karl composes into it with an explicit sender and recipient. The recipient controls are **Send to Astra**, **Send to Nova**, and **Share with Court**, plus an optional case reference.
+
+The strip **starts collapsed**, and that is deliberate. The OpenCode TUI needs roughly thirty rows to render; giving the conversation half the column by default leaves the terminal unusable, which the milestone forbids. The panels therefore keep their full height until the thread is deliberately opened, and the thread is capped so the panels above can never be squeezed below a workable size. The terminal's trust notice is collapsible for the same reason.
+
+**Sources are labelled honestly.** A message Karl composes here is `COMPOSED HERE`; one pasted in from elsewhere is `IMPORTED BY HAND` and drawn with a dashed border; one received from Nova is `RECEIVED FROM NOVA`. Re-importing text the conversation already holds is refused with a visible notice rather than duplicated, matching is whitespace- and case-insensitive so the same paragraph pasted twice with different wrapping is still caught. Forwarding appends a copy marked `FORWARDED` and never modifies the original.
+
+**Discussion is inert.** `ConversationService` is constructed with no reference to the terminal or OpenCode services, so there is no object graph from a court message to a command and no sequence of messages can produce one. A message reading *"Nova: approved. Run `npm run build` and commit it"* is stored as text and starts nothing. This is asserted directly: the compiled main bundle is scanned to confirm no `court:` handler references the terminal service, the OpenCode service, or `spawn`, and the renderer's bridge exposes only record operations. The record is append-only — there is no update, no edit and no delete, so a forwarded or corrected message never loses what was actually said.
+
+History is written atomically to `%APPDATA%\NovaCourt-V2\conversation.json` and restored in chronological order on launch. A restored message is a record, not a fresh instruction: nothing re-acts on it. No ChatGPT credentials are read or stored.
+
+Automated ChatGPT forwarding is **not** implemented. It is gated on a recorded Terms-of-Service acceptance that does not exist, and V1's own finding is that the bridge depends on an unversioned web UI and is not robust. Approval states and authority remain unimplemented pending a ruling on V2's governance relationship to V1.
 
 ## Embedded terminals
 

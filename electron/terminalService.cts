@@ -93,7 +93,16 @@ export class TerminalService {
     if (!size || typeof size !== 'object') throw new Error('Invalid terminal size')
     const { cols, rows } = size as { cols?: unknown; rows?: unknown }
     if (!Number.isInteger(cols) || !Number.isInteger(rows) || (cols as number) < 20 || (cols as number) > 500 || (rows as number) < 5 || (rows as number) > 200) throw new Error('Invalid terminal size')
-    this.process.resize(cols as number, rows as number)
+    // ConPTY throws on a degenerate window size. Recording the new geometry only after the call
+    // succeeds means a rejected resize leaves the PTL state describing what is actually running,
+    // instead of a size the process never adopted.
+    try {
+      this.process.resize(cols as number, rows as number)
+    } catch (error) {
+      this.state.error = `The terminal could not be resized: ${error instanceof Error ? error.message : String(error)}`
+      this.emit()
+      return
+    }
     this.state.cols = cols as number
     this.state.rows = rows as number
   }
