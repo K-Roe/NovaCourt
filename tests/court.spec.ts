@@ -112,9 +112,9 @@ test('M4-V2 Phase B shared court keeps discussion messages inert and survives a 
     // ── The bridge exposes no conversation method that could reach a terminal.
     const bridge = await page.evaluate(() => Object.keys(window.novaCourt).filter((key) => /court|terminal/i.test(key)))
     const courtMethods = bridge.filter((key) => key.toLowerCase().includes('court'))
-    expect(courtMethods.sort()).toEqual(['appendCourtMessage', 'forwardCourtMessage', 'getCourtMessages', 'markCourtDelivery', 'onCourtMessages'])
-    // Every conversation method is a record operation: read, append, forward, or mark delivery.
-    // None of them starts, stops, resizes or writes to a terminal.
+    expect(courtMethods.sort()).toEqual(['acknowledgeCourtMessage', 'appendCourtMessage', 'forwardCourtMessage', 'getCourtMessages', 'markCourtDelivery', 'onCourtMessages'])
+    // Every conversation method is a record operation: read, append, forward, mark delivery, or
+    // record Karl's own confirmation. None of them starts, stops, resizes or writes to a terminal.
     const terminalMethods = bridge.filter((key) => key.toLowerCase().includes('terminal') && !key.toLowerCase().includes('court'))
     expect(courtMethods.every((key) => !terminalMethods.includes(key))).toBe(true)
     // ── Structural guarantee, checked against the compiled main process rather than Electron
@@ -123,7 +123,7 @@ test('M4-V2 Phase B shared court keeps discussion messages inert and survives a 
     // Split at every IPC registration so each court handler is examined in isolation.
     const registrations = bundle.split(/(?=ipcMain\.(?:handle|on)\()/).filter((chunk) => /^ipcMain\.(?:handle|on)\('court:/.test(chunk))
     const channels = [...new Set(registrations.map((chunk) => chunk.match(/'(court:[^']+)'/)![1]))].sort()
-    expect(channels).toEqual(['court:append', 'court:delivery', 'court:forward', 'court:messages'])
+    expect(channels).toEqual(['court:acknowledge', 'court:append', 'court:delivery', 'court:forward', 'court:messages'])
     for (const chunk of registrations) {
       expect(chunk).not.toContain('terminalService')
       expect(chunk).not.toContain('novaService')

@@ -26,6 +26,19 @@ export type CourtMessage = {
   text: string
   source: MessageSource
   delivery: 'local' | 'awaiting-send' | 'sent' | 'unconfirmed'
+  /**
+   * Set only by Karl, and only for a message he copied out to ChatGPT and then sent himself.
+   * NovaCourt never sets it, because NovaCourt never sends anything into ChatGPT. A copied message
+   * stays `local` until Karl says he sent it, so a copy is never reported as a delivery.
+   */
+  acknowledged: boolean
+  acknowledgedAt: string | null
+  /**
+   * Identity of the record this message was made from, when one exists — an OpenCode message id for
+   * a genuine Nova reply. Re-recording the same reply is refused, which is what stops the transcript
+   * filling with copies of one answer as the service re-publishes its state.
+   */
+  externalId: string | null
   createdAt: string
   /** Set when this message was produced by forwarding another; the original is never modified. */
   forwardedFrom: string | null
@@ -39,6 +52,7 @@ export type ConversationInput = {
   caseRef?: unknown
   forwardedFrom?: unknown
   delivery?: unknown
+  externalId?: unknown
 }
 
 export type AppendResult = { ok: true; message: CourtMessage } | { ok: false; reason: string; duplicate: boolean; existingId: string | null }
@@ -101,6 +115,9 @@ export class ConversationService {
       text: entry.text,
       source: entry.source as MessageSource,
       delivery: ['local', 'awaiting-send', 'sent', 'unconfirmed'].includes(String(entry.delivery)) ? entry.delivery as CourtMessage['delivery'] : 'local',
+      acknowledged: entry.acknowledged === true,
+      acknowledgedAt: typeof entry.acknowledgedAt === 'string' ? entry.acknowledgedAt : null,
+      externalId: typeof entry.externalId === 'string' && entry.externalId ? entry.externalId.slice(0, 128) : null,
       createdAt: entry.createdAt,
       forwardedFrom: typeof entry.forwardedFrom === 'string' ? entry.forwardedFrom : null
     }
@@ -146,6 +163,11 @@ export class ConversationService {
     if (forwardedFrom && !this.messages.some((message) => message.id === forwardedFrom)) {
       return { ok: false, reason: 'The message being forwarded no longer exists', duplicate: false, existingId: null }
     }
+    const externalId = typeof input.externalId === 'string' && input.externalId.trim() ? input.externalId.trim().slice(0, 128) : null
+    if (externalId) {
+      const existing = this.messages.find((message) => message.externalId === externalId)
+      if (existing) return { ok: false, reason: 'That message is already in the conversation', duplicate: true, existingId: existing.id }
+    }
     const duplicate = this.findDuplicate(text, sender as CourtParticipant, forwardedFrom)
     if (duplicate) return { ok: false, reason: 'That message is already in the conversation', duplicate: true, existingId: duplicate.id }
 
@@ -157,6 +179,9 @@ export class ConversationService {
       text,
       source: source as MessageSource,
       delivery: ['local', 'awaiting-send', 'sent', 'unconfirmed'].includes(String(input.delivery)) ? input.delivery as CourtMessage['delivery'] : source === 'manual' ? 'local' : 'awaiting-send',
+      acknowledged: false,
+      acknowledgedAt: null,
+      externalId: typeof input.externalId === 'string' && input.externalId.trim() ? input.externalId.trim().slice(0, 128) : null,
       createdAt: new Date().toISOString(),
       forwardedFrom
     }
@@ -179,6 +204,26 @@ export class ConversationService {
     const target = this.messages.find((message) => message.id === id)!
     target.delivery = next as CourtMessage['delivery']
     try { this.persist() } catch { return { ok: false, reason: 'The conversation could not be saved' } }
+    this.publish(this.snapshot())
+    return { ok: true }
+  }
+
+  /**
+   * Records Karl's own statement that he pasted a message into ChatGPT and sent it there.
+   *
+   * NovaCourt never performs that send, so this is the only thing that can mark a copied message as
+   * sent, and it can only ever move the flag from false to true. It cannot change the text, sender,
+   * recipient, source or delivery state — a confirmation is an annotation, never an edit.
+   */
+  acknowledge(id: unknown): { ok: boolean; reason?: string } {
+    if (typeof id !== 'string') return { ok: false, reason: 'No such message' }
+    const target = this.messages.find((message) => message.id === id)
+    if (!target) return { ok: false, reason: 'No such message' }
+    if (target.source !== 'manual' && target.source !== 'imported') return { ok: false, reason: 'Only a copied message can be confirmed as sent' }
+    if (target.acknowledged) return { ok: true }
+    target.acknowledged = true
+    target.acknowledgedAt = new Date().toISOString()
+    try { this.persist() } catch { target.acknowledged = false; target.acknowledgedAt = null; return { ok: false, reason: 'The conversation could not be saved' } }
     this.publish(this.snapshot())
     return { ok: true }
   }

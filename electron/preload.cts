@@ -55,6 +55,21 @@ contextBridge.exposeInMainWorld('novaCourt', {
   appendCourtMessage: (input: unknown) => ipcRenderer.invoke('court:append', input),
   forwardCourtMessage: (id: unknown, recipient: unknown) => ipcRenderer.invoke('court:forward', id, recipient),
   markCourtDelivery: (id: unknown, delivery: unknown) => ipcRenderer.invoke('court:delivery', id, delivery),
+  getHandoffState: () => ipcRenderer.invoke('handoff:state'),
+  onHandoffState: (callback: (state: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
+    ipcRenderer.on('handoff:state', listener)
+    return () => ipcRenderer.removeListener('handoff:state', listener)
+  },
+  pauseHandoffs: (paused: boolean) => ipcRenderer.send('handoff:pause', paused),
+  cancelHandoff: () => ipcRenderer.invoke('handoff:cancel'),
+  writeClipboard: (text: unknown) => ipcRenderer.invoke('handoff:writeClipboard', text),
+  readClipboard: () => ipcRenderer.invoke('handoff:readClipboard'),
+  copyForAstra: (id: unknown) => ipcRenderer.invoke('handoff:copyForAstra', id),
+  confirmAstraSent: (id: unknown) => ipcRenderer.invoke('handoff:confirmAstraSent', id),
+  copyForTerminal: (id: unknown) => ipcRenderer.invoke('handoff:copyForTerminal', id),
+  sendToNova: (id: unknown) => ipcRenderer.invoke('handoff:sendToNova', id),
+  acknowledgeCourtMessage: (id: unknown) => ipcRenderer.invoke('court:acknowledge', id),
   getPortraits: () => ipcRenderer.invoke('portrait:list'),
   onPortraitState: (callback: (state: unknown) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)

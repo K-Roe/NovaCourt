@@ -14,6 +14,32 @@
 .court-thread-title strong{font-size:10px;letter-spacing:.13em}
 .court-thread-count{font-size:9px;color:#8b8291;font-weight:700;letter-spacing:.04em}
 .court-thread-head-right{display:flex;align-items:center;gap:10px}
+.court-handoff-status{font-size:8px;font-weight:800;letter-spacing:.1em;padding:4px 7px;border-radius:5px;background:#2a2533;color:#9b91a6}
+.court-handoff-status.is-awaiting-karl{background:#453318;color:#e9c07f}
+.court-handoff-status.is-awaiting-reply{background:#1f3a35;color:#7fd0bb}
+.court-handoff-status.is-paused{background:#33303c;color:#b6aec2}
+.court-handoff-status.is-error{background:#4a2724;color:#f0a89a}
+.court-handoff-status.is-preparing{background:#3a2748;color:#d0a6ec}
+.court-handoff-detail{flex:none;margin:7px 12px 0;padding:7px 9px;border-radius:7px;background:#2d2740;color:#cbb8e4;font-size:10px;line-height:1.45;border:1px solid #3f3457}
+.court-handoff-detail.is-error{background:#4a2724;color:#f0a89a;border-color:#6d4038}
+.court-handoff-actions{flex:none;display:flex;justify-content:flex-end;padding:6px 12px 0}
+.court-handoff-actions button{display:inline-flex;align-items:center;gap:5px;border:1px solid #6d4038;border-radius:6px;background:#3a2320;color:#e0a294;font-size:9px;font-weight:700;padding:5px 9px;cursor:pointer}
+.court-filters{flex:none;display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:7px 12px;border-bottom:1px solid #322c3a;background:#1e1b27}
+.court-filters label{display:flex;align-items:center;gap:5px;font-size:8px;font-weight:800;letter-spacing:.11em;color:#8d8394}
+.court-filters select{background:#232030;color:#e8dcec;border:1px solid #453c52;border-radius:6px;font-size:10px;padding:4px 6px}
+.court-handoff-buttons{display:flex;gap:6px;margin-left:auto}
+.court-handoff-buttons button{display:inline-flex;align-items:center;gap:5px;border:1px solid #7a4f38;border-radius:6px;background:#4b3227;color:#f6c398;font-size:9px;font-weight:800;padding:5px 9px;cursor:pointer}
+.court-handoff-buttons button:disabled{opacity:.4;cursor:not-allowed}
+.tag-ack{background:#3a2c14;color:#f0c281;border:1px solid #6a4a24}
+.court-message-actions .confirm-sent{border-color:#6d4038;background:#3a2320;color:#f0b4a1}
+.court-preview-backdrop{position:fixed;inset:0;z-index:50;display:grid;place-items:center;background:rgba(8,6,14,.72);padding:24px}
+.court-preview{width:min(620px,100%);max-height:80vh;display:flex;flex-direction:column;gap:11px;padding:18px;border:1px solid #453c52;border-radius:13px;background:#1e1b26;box-shadow:0 18px 50px rgba(0,0,0,.55)}
+.court-preview h3{margin:0;font:700 16px Outfit,Segoe UI,sans-serif;color:#f2e9dc}
+.court-preview-lead{margin:0;font-size:11px;line-height:1.5;color:#a79db1}
+.court-preview-text{flex:1;min-height:120px;margin:0;padding:11px;border:1px solid #3f3450;border-radius:9px;background:#151320;color:#e6dcee;font-family:'Cascadia Mono',Consolas,monospace;font-size:11.5px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto}
+.court-preview-actions{display:flex;justify-content:flex-end;gap:8px}
+.court-preview-actions button{border:1px solid #815a3f;border-radius:8px;background:#4b3227;color:#f6c398;font-size:10px;font-weight:800;padding:9px 15px;cursor:pointer}
+.court-preview-actions button.secondary{background:#26232b;border-color:#4b414b;color:#c6bcc5}
 .court-thread-note{font-size:9px;color:#8d8394;letter-spacing:.02em}
 .court-thread-collapse{width:24px;height:24px;display:grid;place-items:center;border:1px solid #4a3f57;border-radius:6px;background:#262231;color:#c9a6eb}
 .court-thread-collapse:hover{background:#332c42}

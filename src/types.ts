@@ -25,8 +25,21 @@ export type CourtMessage = {
   text: string
   source: 'manual' | 'imported' | 'connected'
   delivery: 'local' | 'awaiting-send' | 'sent' | 'unconfirmed'
+  acknowledged: boolean
+  acknowledgedAt: string | null
+  externalId: string | null
   createdAt: string
   forwardedFrom: string | null
+}
+export type HandoffTarget = 'astra' | 'nova'
+export type HandoffStatus = 'idle' | 'preparing' | 'awaiting-karl' | 'awaiting-reply' | 'paused' | 'error'
+export type HandoffState = {
+  status: HandoffStatus
+  target: HandoffTarget | null
+  messageId: string | null
+  detail: string | null
+  paused: boolean
+  since: string | null
 }
 export type Participant = 'karl' | 'astra' | 'nova'
 export type PortraitFraming = { zoom: number; x: number; y: number }
@@ -91,6 +104,17 @@ declare global {
       appendCourtMessage: (input: { sender: CourtParticipant; recipient: CourtRecipient; text: string; source: 'manual' | 'imported'; caseRef?: string }) => Promise<CourtMessage>
       forwardCourtMessage: (id: string, recipient: CourtRecipient) => Promise<CourtMessage>
       markCourtDelivery: (id: string, delivery: CourtMessage['delivery']) => Promise<CourtMessage[]>
+      acknowledgeCourtMessage: (id: string) => Promise<CourtMessage[]>
+      getHandoffState: () => Promise<HandoffState>
+      onHandoffState: (callback: (state: HandoffState) => void) => () => void
+      pauseHandoffs: (paused: boolean) => void
+      cancelHandoff: () => Promise<HandoffState>
+      writeClipboard: (text: string) => Promise<boolean>
+      readClipboard: () => Promise<string>
+      copyForAstra: (id: string) => Promise<HandoffState>
+      confirmAstraSent: (id: string) => Promise<CourtMessage[]>
+      copyForTerminal: (id: string) => Promise<{ copied: boolean; notice: string }>
+      sendToNova: (id: string) => Promise<HandoffState>
       getPortraits: () => Promise<PortraitState[]>
       onPortraitState: (callback: (state: PortraitState) => void) => () => void
       readPortraitImage: (participant: Participant) => Promise<string | null>

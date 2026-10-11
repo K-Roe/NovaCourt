@@ -1,9 +1,10 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, session, WebContentsView, type Rectangle } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, session, WebContentsView, type Rectangle } from 'electron'
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { OpenCodeService, validWorkspace } from './openCodeService.cjs'
 import { ConversationService } from './conversationService.cjs'
+import { HandoffService } from './handoffService.cjs'
 import { PortraitService } from './portraitService.cjs'
 import { TerminalService } from './terminalService.cjs'
 
@@ -24,6 +25,7 @@ let novaService: OpenCodeService | null = null
 let terminalService: TerminalService | null = null
 let portraitService: PortraitService | null = null
 let conversationService: ConversationService | null = null
+let handoffService: HandoffService | null = null
 let astraStatus: AstraStatus = fixtureMode
   ? { source: 'fixture', phase: 'loading', detail: 'Loading local fixture' }
   : { source: 'chatgpt', phase: 'loading', detail: 'Loading chatgpt.com' }
@@ -100,6 +102,37 @@ function updateAstra(request: ViewRequest) {
   attached = true
   lastBounds = bounds
 }
+/**
+ * Records genuine Nova replies into the shared transcript.
+ *
+ * It only ever runs while a Nova handoff is outstanding, it records the service's real assistant
+ * messages, and it stamps each with the OpenCode message id so the same reply cannot be recorded
+ * twice as the service republishes its state. Nothing here fabricates a response, and a refusal or an
+ * error message is never dressed up as an answer.
+ */
+let novaReplyBaseline = new Set<string>()
+
+/** Called when a prompt is accepted, so replies already in the session are not mistaken for new ones. */
+function primeNovaReplyBaseline(state: { messages: { id: string; role: string }[] }) {
+  novaReplyBaseline = new Set(state.messages.filter((message) => message.role === 'assistant').map((message) => message.id))
+}
+
+function recordNovaReplies(state: { messages: { id: string; role: string; text: string; error?: string }[] }) {
+  if (!handoffService?.isAwaitingNova() || !conversationService) return
+  for (const id of [...novaReplyBaseline]) if (!state.messages.some((message) => message.id === id)) novaReplyBaseline.delete(id)
+  let recorded = 0
+  for (const message of state.messages) {
+    if (message.role !== 'assistant' || novaReplyBaseline.has(message.id)) continue
+    // An error is a failure to answer, not an answer. It is reported as an error and never recorded
+    // as a reply, so the transcript cannot come to contain a fabricated Nova response.
+    if (message.error) { novaReplyBaseline.add(message.id); handoffService.fail(`Nova could not answer: ${message.error}`); return }
+    if (!message.text.trim()) continue
+    const result = conversationService.append({ sender: 'nova', recipient: 'court', text: message.text, source: 'connected', delivery: 'sent', externalId: message.id })
+    if (result.ok) { novaReplyBaseline.add(message.id); recorded += 1 }
+  }
+  if (recorded > 0) handoffService.settle('Nova replied. The genuine reply is in the transcript.')
+}
+
 function createWindow() {
   const window = new BrowserWindow({
     width: 1440, height: 900, minWidth: 960, minHeight: 600,
@@ -108,6 +141,7 @@ function createWindow() {
   })
   mainWindow = window
   novaService = new OpenCodeService(app.getPath('userData'), (state) => {
+    recordNovaReplies(state)
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('nova:state', state)
   })
   terminalService = new TerminalService(
@@ -122,6 +156,9 @@ function createWindow() {
   // graph from a court message to a command, so no sequence of messages can produce one.
   conversationService = new ConversationService(app.getPath('userData'), (messages) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('court:messages', messages)
+  })
+  handoffService = new HandoffService((state) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('handoff:state', state)
   })
   const confirmTerminalStop = async (reason: string) => {
     if (!terminalService?.isRunning()) return true
@@ -253,6 +290,94 @@ function createWindow() {
     if (!result.ok) throw new Error(result.reason)
     return conversationService.snapshot()
   })
+  ipcMain.handle('handoff:state', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return handoffService?.snapshot() })
+  ipcMain.on('handoff:pause', (event, paused: unknown) => { if (!trustedSender(event)) return; if (paused === true) handoffService?.pause(); else handoffService?.resume() })
+  ipcMain.handle('handoff:cancel', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return handoffService?.cancel() })
+
+  // Clipboard helpers. The clipboard is read ONLY on an explicit click of "Import Astra Reply", and
+  // written only on an explicit copy action. Nothing here runs on a timer or on receipt of a message.
+  ipcMain.handle('handoff:writeClipboard', (event, text: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (typeof text !== 'string' || !text.trim() || text.length > 8000) throw new Error('Nothing to copy')
+    clipboard.writeText(text)
+    return true
+  })
+  ipcMain.handle('handoff:readClipboard', async (event) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    return (await clipboard.readText()).slice(0, 8000)
+  })
+
+  ipcMain.handle('handoff:copyForAstra', (event, id: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!handoffService || !conversationService) throw new Error('Handoffs are unavailable')
+    const message = conversationService.snapshot().find((entry) => entry.id === id)
+    if (!message) throw new Error('No such message')
+    const prepared = handoffService.prepare('astra', message.id, 'Preparing a copy for Astra.')
+    if (!prepared.ok) throw new Error(prepared.reason)
+    clipboard.writeText(message.text)
+    // Deliberately NOT a delivery. NovaCourt cannot see ChatGPT, so the message stays `local` and the
+    // workflow waits for Karl to send it himself and then confirm.
+    handoffService.awaitingKarl(message.id, 'Copied to your clipboard. Paste it into ChatGPT and send it there, then press “I sent this in ChatGPT”.')
+    return handoffService.snapshot()
+  })
+
+  ipcMain.handle('handoff:confirmAstraSent', (event, id: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!handoffService || !conversationService) throw new Error('Handoffs are unavailable')
+    const result = conversationService.acknowledge(id)
+    if (!result.ok) throw new Error(result.reason)
+    handoffService.settle('You confirmed this was sent in ChatGPT.')
+    return conversationService.snapshot()
+  })
+
+  ipcMain.handle('handoff:copyForTerminal', (event, id: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!handoffService || !conversationService) throw new Error('Handoffs are unavailable')
+    const message = conversationService.snapshot().find((entry) => entry.id === id)
+    if (!message) throw new Error('No such message')
+    // Clipboard only. There is deliberately no path from this handler to the PTY: Karl pastes into
+    // the terminal himself, which keeps the terminal's trust boundary exactly where M3.1 left it.
+    clipboard.writeText(message.text)
+    return { copied: true, notice: 'Copied. Paste it into the terminal yourself — NovaCourt never writes to a terminal.' }
+  })
+
+  ipcMain.handle('handoff:sendToNova', async (event, id: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!handoffService || !conversationService || !novaService) throw new Error('Handoffs are unavailable')
+    const message = conversationService.snapshot().find((entry) => entry.id === id)
+    if (!message) throw new Error('No such message')
+    const prepared = handoffService.prepare('nova', message.id, 'Sending to Nova through the guarded chat service.')
+    if (!prepared.ok) throw new Error(prepared.reason)
+    const before = novaService.snapshot()
+    primeNovaReplyBaseline(before)
+    conversationService.markDelivery(message.id, 'awaiting-send')
+    try {
+      // The guarded service re-verifies deny-all permissions and the free model before every send.
+      await novaService.send(message.text)
+    } catch (error) {
+      conversationService.markDelivery(message.id, 'unconfirmed')
+      handoffService.fail(error instanceof Error ? error.message : String(error))
+      throw error
+    }
+    // The guarded service accepted the prompt, so receipt is confirmed by the service itself and the
+    // message leaves the pending state. This is the only claim of delivery NovaCourt can make: the
+    // reply itself is recorded separately, and only when it genuinely arrives.
+    conversationService.markDelivery(message.id, 'sent')
+    handoffService.awaitingReply(message.id, 'Nova has the message. Waiting for its genuine reply…')
+    // A fast model can answer while `send()` is still resolving, so its reply may already be in the
+    // state that was published before the workflow entered "awaiting reply". Re-check now, otherwise
+    // that reply would sit unrecorded until the next unrelated state change.
+    recordNovaReplies(novaService.snapshot())
+    return handoffService.snapshot()
+  })
+
+  ipcMain.handle('court:acknowledge', (event, id: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!conversationService) throw new Error('The conversation is unavailable')
+    const result = conversationService.acknowledge(id)
+    if (!result.ok) throw new Error(result.reason)
+    return conversationService.snapshot()
+  })
   ipcMain.handle('portrait:list', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return portraitService?.snapshot() })
   ipcMain.handle('portrait:image', (event, participant: unknown) => {
     if (!trustedSender(event)) throw new Error('Untrusted sender')
@@ -297,6 +422,8 @@ function createWindow() {
     portraitService = null
     conversationService?.close()
     conversationService = null
+    handoffService?.close()
+    handoffService = null
     novaService?.close()
     novaService = null
     for (const view of views.values()) if (!view.webContents.isDestroyed()) view.webContents.close()
