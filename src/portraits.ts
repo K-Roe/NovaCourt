@@ -14,7 +14,7 @@ export type Mood = 'default' | 'judge' | 'hammer' | 'worried' | 'building' | 'ce
 export const PARTICIPANT_META: Record<Participant, { name: string; role: string; initial: string; hue: number; theme: string }> = {
   karl: { name: 'Karl', role: 'The Owner', initial: 'K', hue: 176, theme: 'teal' },
   astra: { name: 'Astra', role: 'The Judge', initial: 'A', hue: 272, theme: 'purple' },
-  nova: { name: 'Nova', role: 'The Builder', initial: 'N', hue: 24, theme: 'orange' }
+  nova: { name: 'Nova', role: 'The Defendant', initial: 'N', hue: 24, theme: 'orange' }
 }
 
 export const MOODS: readonly Mood[] = ['default', 'judge', 'hammer', 'worried', 'building', 'celebrate']

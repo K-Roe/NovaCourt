@@ -2,6 +2,7 @@ import { spawn, execFileSync, type ChildProcess } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
+import { getNovaPersonality, buildDiscussionSystem, invalidatePersonalityCache } from './novaPersonality.cjs'
 
 type Connection = 'disconnected' | 'connecting' | 'connected' | 'error'
 type Config = { endpoint: string; executablePath: string; workspace: string; sessionId: string | null; modelId: string | null }
@@ -11,7 +12,6 @@ type Model = { id: string; name: string; providerID: string; modelID: string }
 export type NovaState = { connection: Connection; error: string | null; version: string | null; installedVersion: string | null; executableFound: boolean; config: Config; sessions: Session[]; messages: Message[]; models: Model[]; busy: boolean; deliveryUncertain: boolean }
 
 const denyAll = [{ permission: '*', pattern: '*', action: 'deny' }] as const
-const discussionSystem = 'Discussion only. Answer questions and suggest plans in text. Do not use any tools, execute commands, change files, spawn agents, or access other workspaces.'
 const sessionPattern = /^ses[\w-]{1,128}$/
 const maxText = 20_000
 
@@ -120,6 +120,7 @@ export class OpenCodeService {
     this.state.installedVersion = this.detectVersion(executablePath)
     this.state.executableFound = !!this.state.installedVersion
     this.state.error = null
+    invalidatePersonalityCache()
     this.persist()
     this.emit()
     return this.snapshot()
@@ -229,7 +230,9 @@ export class OpenCodeService {
     this.pendingUntil = Date.now() + 3000
     this.state.busy = true; this.state.deliveryUncertain = false; this.emit()
     try {
-      await this.request(this.path(`/session/${encodeURIComponent(id)}/prompt_async`), { method: 'POST', body: JSON.stringify({ model: { providerID: model.providerID, modelID: model.modelID }, agent: 'plan', system: discussionSystem, tools, parts: [{ type: 'text', text: input.trim() }] }) }, 30000)
+      const personality = getNovaPersonality(this.state.config.workspace)
+      const system = buildDiscussionSystem(personality)
+      await this.request(this.path(`/session/${encodeURIComponent(id)}/prompt_async`), { method: 'POST', body: JSON.stringify({ model: { providerID: model.providerID, modelID: model.modelID }, agent: 'plan', system, tools, parts: [{ type: 'text', text: input.trim() }] }) }, 30000)
       await this.refreshActivity(); this.emit()
     } catch (error) {
       this.state.deliveryUncertain = true
