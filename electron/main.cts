@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { OpenCodeService, validWorkspace } from './openCodeService.cjs'
+import { PortraitService } from './portraitService.cjs'
 import { TerminalService } from './terminalService.cjs'
 
 type PanelWidths = { karl: number; astra: number; nova: number }
@@ -20,6 +21,7 @@ let attached = false
 let lastBounds: Rectangle | null = null
 let novaService: OpenCodeService | null = null
 let terminalService: TerminalService | null = null
+let portraitService: PortraitService | null = null
 let astraStatus: AstraStatus = fixtureMode
   ? { source: 'fixture', phase: 'loading', detail: 'Loading local fixture' }
   : { source: 'chatgpt', phase: 'loading', detail: 'Loading chatgpt.com' }
@@ -110,6 +112,9 @@ function createWindow() {
     (state) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('terminal:state', state) },
     (id, data) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('terminal:data', { id, data }) },
   )
+  portraitService = new PortraitService(app.getPath('userData'), (state) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('portrait:state', state)
+  })
   const confirmTerminalStop = async (reason: string) => {
     if (!terminalService?.isRunning()) return true
     const choice = await dialog.showMessageBox(window, {
@@ -207,6 +212,31 @@ function createWindow() {
   ipcMain.handle('terminal:clear', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return terminalService?.clear() })
   ipcMain.on('terminal:write', (event, id: unknown, data: unknown) => { if (trustedSender(event)) { try { terminalService?.write(id, data) } catch { /* Ignore stale or invalid input. */ } } })
   ipcMain.on('terminal:resize', (event, id: unknown, size: unknown) => { if (trustedSender(event)) { try { terminalService?.resize(id, size) } catch { /* Ignore stale or invalid dimensions. */ } } })
+  ipcMain.handle('portrait:list', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return portraitService?.snapshot() })
+  ipcMain.handle('portrait:image', (event, participant: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    const found = portraitService?.read(participant)
+    // Served as a data URL rather than a file:// path so the renderer never learns a filesystem
+    // location and never gains a path it could resolve itself.
+    return found ? `data:${found.record.mime};base64,${found.data.toString('base64')}` : null
+  })
+  ipcMain.handle('portrait:save', (event, participant: unknown, payload: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!portraitService) throw new Error('Portraits are unavailable')
+    const record = portraitService.save(participant, payload)
+    const stored = portraitService.read(participant)
+    return { ...record, url: stored ? `data:${record.mime};base64,${stored.data.toString('base64')}` : null }
+  })
+  ipcMain.handle('portrait:framing', (event, participant: unknown, framing: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!portraitService) throw new Error('Portraits are unavailable')
+    return portraitService.setFraming(participant, framing)
+  })
+  ipcMain.handle('portrait:reset', (event, participant: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!portraitService) throw new Error('Portraits are unavailable')
+    return portraitService.reset(participant)
+  })
   ipcMain.handle('astra:readStatus', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return astraStatus })
   ipcMain.on('astra:retry', (event) => {
     if (!trustedSender(event)) return
@@ -222,6 +252,8 @@ function createWindow() {
   window.on('closed', () => {
     terminalService?.close()
     terminalService = null
+    portraitService?.close()
+    portraitService = null
     novaService?.close()
     novaService = null
     for (const view of views.values()) if (!view.webContents.isDestroyed()) view.webContents.close()

@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowUp, ChevronDown, Gavel, MessageCircle, RotateCcw, Settings2, Sparkles } from 'lucide-react'
+import { ArrowUp, ChevronDown, Gavel, MessageCircle, RotateCcw, Settings2, Users } from 'lucide-react'
 import type { AstraStatus, PanelWidths, ViewRequest } from './types'
+import Avatar from './Avatar'
+import { PortraitProvider } from './portraitStore'
+import { portraitParticipants } from './portraits'
 import NovaPanel from './NovaPanel'
+import PortraitPicker from './PortraitPicker'
 
-type Page = 'conversation' | 'settings'
+type Page = 'conversation' | 'portraits' | 'settings'
 type Note = { id: string; text: string; createdAt: string }
 const defaults: PanelWidths = { karl: 34, astra: 35, nova: 31 }
 const notesKey = 'novacourt-v2:karl-notes'
@@ -16,6 +20,10 @@ function readNotes(): Note[] {
 }
 
 export default function App() {
+  return <PortraitProvider><Court /></PortraitProvider>
+}
+
+function Court() {
   const [page, setPage] = useState<Page>('conversation')
   const [widths, setWidths] = useState<PanelWidths>(defaults)
   const [notes, setNotes] = useState<Note[]>(readNotes)
@@ -99,6 +107,7 @@ export default function App() {
       <div className="brand"><div className="brand-mark"><Gavel size={21} strokeWidth={2.2}/></div><div><div className="brand-name">NOVA<span>COURT</span></div><div className="brand-sub">BRIGHTSENAPPS · V2</div></div></div>
       <nav className="top-nav" aria-label="Main navigation">
         <button className={page === 'conversation' ? 'nav-item active' : 'nav-item'} onClick={() => setPage('conversation')}><MessageCircle size={16}/> Conversation</button>
+        <button className={page === 'portraits' ? 'nav-item active' : 'nav-item'} onClick={() => setPage('portraits')}><Users size={16}/> Portraits</button>
         <button className={page === 'settings' ? 'nav-item active' : 'nav-item'} onClick={() => setPage('settings')}><Settings2 size={16}/> Settings</button>
       </nav>
       <div className="header-right"><span className="session-tag"><span className="session-dot"/> LOCAL SESSION</span><button className="hammer-button" title="Courtroom actions are planned for a later milestone" aria-label="Astra hammer, future actions" disabled><Gavel size={18}/></button></div>
@@ -108,18 +117,18 @@ export default function App() {
       <div className="screen-heading"><div><span className="eyebrow">THE CONVERSATION</span><h1>Three seats. One conversation.</h1></div><div className="stage-label"><span className="stage-line"/> M3.1 · NOVA TERMINALS</div></div>
       <div className="court-grid" ref={gridRef} style={{ gridTemplateColumns: `${widths.karl}fr 8px ${widths.astra}fr 8px ${widths.nova}fr` }}>
         <section className="participant-panel karl-panel" aria-label="Karl panel">
-          <div className="panel-head"><div className="identity"><div className="avatar karl-avatar">K</div><div><div className="seat">LEFT SEAT · THE OWNER</div><h2>Karl</h2></div></div><span className="status ready"><span/> READY</span></div>
+          <div className="panel-head"><div className="identity"><Avatar participant="karl" size={34}/><div><div className="seat">LEFT SEAT · THE OWNER</div><h2>Karl</h2></div></div><span className="status ready"><span/> READY</span></div>
           <div className="panel-body karl-body"><div className="thread-label">LOCAL NOTES <span>{notes.length ? `${notes.length} saved` : 'Private to this app'}</span></div>
-            {notes.length === 0 ? <div className="empty-state"><div className="empty-icon"><MessageCircle size={24}/></div><h3>Your conversation starts here.</h3><p>Capture your thoughts in Karl’s seat. Notes stay local; use Nova’s composer to send a discussion message.</p></div> : <div className="note-list">{notes.map((note) => <article className="note" key={note.id}><div className="note-meta"><span className="mini-avatar">K</span> KARL · LOCAL NOTE <time>{new Date(note.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p>{note.text}</p></article>)}<div ref={notesEndRef}/></div>}
+            {notes.length === 0 ? <div className="empty-state"><div className="empty-icon"><MessageCircle size={24}/></div><h3>Your conversation starts here.</h3><p>Capture your thoughts in Karl’s seat. Notes stay local; use Nova’s composer to send a discussion message.</p></div> : <div className="note-list">{notes.map((note) => <article className="note" key={note.id}><div className="note-meta"><Avatar participant="karl" size={16}/> KARL · LOCAL NOTE <time>{new Date(note.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p>{note.text}</p></article>)}<div ref={notesEndRef}/></div>}
           </div>
           <form className="composer" onSubmit={addNote}><div className="composer-to">SAVE TO <strong>KARL’S LOCAL NOTES</strong><ChevronDown size={13}/></div><div className="composer-input"><textarea aria-label="Write a local note" placeholder="Write a thought for the court..." value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} rows={3}/><button type="submit" aria-label="Save local note" disabled={!draft.trim()}><ArrowUp size={18}/></button></div><div className="composer-hint">Enter to save <span>·</span> Shift + Enter for a new line</div></form>
         </section>
         <div className="divider" role="separator" aria-label="Resize Karl and Astra panels" aria-orientation="vertical" onPointerDown={(event) => startResize('left', event)} onPointerMove={moveResize} onPointerUp={stopResize} onLostPointerCapture={stopResize}><span/></div>
-        <section className="participant-panel astra-panel" aria-label="Astra panel"><div className="panel-head"><div className="identity"><div className="avatar astra-avatar"><Sparkles size={19}/></div><div><div className="seat">MIDDLE SEAT · CHATGPT</div><h2>Astra</h2></div></div><div className="astra-controls"><span className={`status astra-${astraStatus.phase}`} title={astraStatus.detail}><span/> {astraLabel[astraStatus.phase]}</span><button className="astra-retry" type="button" onClick={() => window.novaCourt.retryAstra()} title="Reload ChatGPT website" aria-label="Reload Astra website"><RotateCcw size={14}/></button></div></div><div className="native-viewport" ref={astraViewportRef} data-testid="astra-viewport"/></section>
+        <section className="participant-panel astra-panel" aria-label="Astra panel"><div className="panel-head"><div className="identity"><Avatar participant="astra" size={34}/><div><div className="seat">MIDDLE SEAT · CHATGPT</div><h2>Astra</h2></div></div><div className="astra-controls"><span className={`status astra-${astraStatus.phase}`} title={astraStatus.detail}><span/> {astraLabel[astraStatus.phase]}</span><button className="astra-retry" type="button" onClick={() => window.novaCourt.retryAstra()} title="Reload ChatGPT website" aria-label="Reload Astra website"><RotateCcw size={14}/></button></div></div><div className="native-viewport" ref={astraViewportRef} data-testid="astra-viewport"/></section>
         <div className="divider" role="separator" aria-label="Resize Astra and Nova panels" aria-orientation="vertical" onPointerDown={(event) => startResize('right', event)} onPointerMove={moveResize} onPointerUp={stopResize} onLostPointerCapture={stopResize}><span/></div>
         <NovaPanel/>
       </div>
       <div className="screen-foot"><span><span className="foot-dot"/> A local workspace for Karl</span><span>{astraStatus.source === 'fixture' ? 'Offline fixture for layout tests' : 'ChatGPT is manual · account status is not detected'} · Nova messages send only from Nova’s composer</span></div>
-    </main> : <main className="settings-screen"><div className="settings-wrap"><span className="eyebrow">PREFERENCES</span><h1>Make room for every voice.</h1><p className="settings-intro">Panel widths are saved on this device. ChatGPT opens in a dedicated persistent Electron session; sign in manually in Astra’s panel. The app does not read your account or conversations.</p><div className="setting-card"><div><h2>Conversation layout</h2><p>Drag either divider on the Conversation screen to change panel widths.</p><div className="width-values"><span>Karl {Math.round(widths.karl)}%</span><span>Astra {Math.round(widths.astra)}%</span><span>Nova {Math.round(widths.nova)}%</span></div></div><button onClick={resetWidths}><RotateCcw size={15}/> Reset widths</button></div><button className="back-button" onClick={() => setPage('conversation')}>← Back to Conversation</button></div></main>}
+    </main> : page === 'portraits' ? <main className="settings-screen"><div className="settings-wrap"><span className="eyebrow">THE CAST</span><h1>Who is in the courtroom.</h1><p className="settings-intro">Upload a portrait for Karl, Astra and Nova. Images are stored in NovaCourt’s application data folder on this device, never in the repository. Until an image is uploaded, that seat shows a coloured initial. NovaCourt does not generate a likeness of any person.</p><div className="portrait-grid">{portraitParticipants.map((participant) => <PortraitPicker key={participant} participant={participant}/>)}</div><button className="back-button" onClick={() => setPage('conversation')}>← Back to Conversation</button></div></main> : <main className="settings-screen"><div className="settings-wrap"><span className="eyebrow">PREFERENCES</span><h1>Make room for every voice.</h1><p className="settings-intro">Panel widths are saved on this device. ChatGPT opens in a dedicated persistent Electron session; sign in manually in Astra’s panel. The app does not read your account or conversations.</p><div className="setting-card"><div><h2>Conversation layout</h2><p>Drag either divider on the Conversation screen to change panel widths.</p><div className="width-values"><span>Karl {Math.round(widths.karl)}%</span><span>Astra {Math.round(widths.astra)}%</span><span>Nova {Math.round(widths.nova)}%</span></div></div><button onClick={resetWidths}><RotateCcw size={15}/> Reset widths</button></div><button className="back-button" onClick={() => setPage('conversation')}>← Back to Conversation</button></div></main>}
   </div>
 }

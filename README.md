@@ -4,9 +4,19 @@ A fresh Electron, React, TypeScript, and Vite desktop application for a three-se
 
 ## Current milestone
 
-M0 through M3.1 are implemented. The app opens directly to Karl, Astra, and Nova panels. Astra loads the real ChatGPT website inside a native `WebContentsView` using a dedicated `persist:chatgpt` Electron partition. Sign in manually in that panel; NovaCourt does not read account state or conversations. Karl's composer saves local notes. Nova offers chat-only discussion through a local OpenCode server and two separately controlled interactive terminals. Dividers resize the columns, and widths persist locally.
+M0 through M4-V2 Phase A are implemented. The app opens directly to Karl, Astra, and Nova panels. Astra loads the real ChatGPT website inside a native `WebContentsView` using a dedicated `persist:chatgpt` Electron partition. Sign in manually in that panel; NovaCourt does not read account state or conversations. Karl's composer saves local notes. Nova offers chat-only discussion through a local OpenCode server and two separately controlled interactive terminals. Dividers resize the columns, and widths persist locally.
 
 The offline Astra fixture is retained for automated layout tests. Nova Chat messages are sent only when Karl presses Send in that view. There is no automatic Astra relay; terminal activity starts only on Karl's direct action.
+
+## Portraits
+
+Karl, Astra, and Nova each have a seat in the courtroom. By default a seat shows a coloured initial, because NovaCourt will not generate a likeness of a real person. The **Portraits** page lets Karl upload approved artwork for each seat.
+
+Upload accepts PNG, JPG, and WebP up to 4 MB and 4096px per side. The format is decided by reading the file's magic bytes in the main process, never by the extension or by a MIME type the renderer claims, so a renamed script cannot be written into the portraits folder. Files are written to `%APPDATA%\NovaCourt-V2\portraits\` with a generated name and are never stored in the repository; the renderer never learns a filesystem path and receives images as data URLs. An index entry is accepted only if the referenced file exists at its recorded size, and files the index does not claim are pruned on launch.
+
+A crop is chosen before saving: zoom from 1× to 3× and drag the image to set the focal point. The crop is stored as presentation metadata, so an image can be re-framed later without uploading it again. Replace, reset crop, and remove are all available, and every avatar updates immediately without a restart. A malformed index degrades to initials rather than failing to launch.
+
+Phase C approval states and automated ChatGPT forwarding are **not** implemented. See the milestone proposal: automated forwarding is gated on a recorded Terms-of-Service acceptance that does not exist yet.
 
 ## Embedded terminals
 

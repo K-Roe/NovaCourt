@@ -46,6 +46,16 @@ contextBridge.exposeInMainWorld('novaCourt', {
   stopTerminal: () => ipcRenderer.invoke('terminal:stop'),
   restartTerminal: (mode: unknown, size: unknown) => ipcRenderer.invoke('terminal:restart', mode, size),
   clearTerminal: () => ipcRenderer.invoke('terminal:clear'),
+  getPortraits: () => ipcRenderer.invoke('portrait:list'),
+  onPortraitState: (callback: (state: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
+    ipcRenderer.on('portrait:state', listener)
+    return () => ipcRenderer.removeListener('portrait:state', listener)
+  },
+  readPortraitImage: (participant: unknown) => ipcRenderer.invoke('portrait:image', participant),
+  savePortrait: (participant: unknown, payload: unknown) => ipcRenderer.invoke('portrait:save', participant, payload),
+  framePortrait: (participant: unknown, framing: unknown) => ipcRenderer.invoke('portrait:framing', participant, framing),
+  resetPortrait: (participant: unknown) => ipcRenderer.invoke('portrait:reset', participant),
   writeTerminal: (id: unknown, data: unknown) => ipcRenderer.send('terminal:write', id, data),
   resizeTerminal: (id: unknown, size: unknown) => ipcRenderer.send('terminal:resize', id, size),
   testViewBounds: () => ipcRenderer.invoke('test:viewBounds')

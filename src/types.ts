@@ -15,6 +15,20 @@ export type NovaState = {
   busy: boolean
   deliveryUncertain: boolean
 }
+export type Participant = 'karl' | 'astra' | 'nova'
+export type PortraitFraming = { zoom: number; x: number; y: number }
+export type PortraitRecord = {
+  participant: Participant
+  file: string
+  mime: 'image/png' | 'image/jpeg' | 'image/webp'
+  bytes: number
+  width: number
+  height: number
+  framing: PortraitFraming
+  updatedAt: string
+}
+export type PortraitState = { participant: Participant; portrait: PortraitRecord | null }
+export type PortraitWithImage = PortraitRecord & { url: string | null }
 export type TerminalMode = 'opencode' | 'powershell'
 export type TerminalState = {
   id: string | null
@@ -59,6 +73,12 @@ declare global {
       clearTerminal: () => Promise<TerminalState>
       writeTerminal: (id: string, data: string) => void
       resizeTerminal: (id: string, size: TerminalSize) => void
+      getPortraits: () => Promise<PortraitState[]>
+      onPortraitState: (callback: (state: PortraitState) => void) => () => void
+      readPortraitImage: (participant: Participant) => Promise<string | null>
+      savePortrait: (participant: Participant, payload: { encoding: 'base64'; data: string; framing?: PortraitFraming }) => Promise<PortraitWithImage>
+      framePortrait: (participant: Participant, framing: PortraitFraming) => Promise<PortraitRecord>
+      resetPortrait: (participant: Participant) => Promise<PortraitState>
       testViewBounds: () => Promise<{ bounds: ViewRequest['rect'] | null; attached: boolean; registered: boolean }>
     }
   }
