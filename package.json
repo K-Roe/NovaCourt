@@ -9,15 +9,20 @@
     "typecheck": "tsc -b && tsc -p tsconfig.electron.json --noEmit",
     "build": "npm run typecheck && vite build && tsc -p tsconfig.electron.json",
     "start": "electron .",
+    "rebuild:native": "electron-rebuild -f -w node-pty",
     "test": "npm run build && playwright test"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "electron": "^44.7.0",
     "lucide-react": "^0.468.0",
+    "node-pty": "^1.1.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.2.1",
     "@playwright/test": "^1.64.0",
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",

@@ -1,8 +1,9 @@
-import { app, BrowserWindow, ipcMain, Menu, session, WebContentsView, type Rectangle } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, session, WebContentsView, type Rectangle } from 'electron'
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { OpenCodeService } from './openCodeService.cjs'
+import { OpenCodeService, validWorkspace } from './openCodeService.cjs'
+import { TerminalService } from './terminalService.cjs'
 
 type PanelWidths = { karl: number; astra: number; nova: number }
 type Settings = { panelWidths: PanelWidths }
@@ -18,6 +19,7 @@ let mainWindow: BrowserWindow | null = null
 let attached = false
 let lastBounds: Rectangle | null = null
 let novaService: OpenCodeService | null = null
+let terminalService: TerminalService | null = null
 let astraStatus: AstraStatus = fixtureMode
   ? { source: 'fixture', phase: 'loading', detail: 'Loading local fixture' }
   : { source: 'chatgpt', phase: 'loading', detail: 'Loading chatgpt.com' }
@@ -104,6 +106,19 @@ function createWindow() {
   novaService = new OpenCodeService(app.getPath('userData'), (state) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('nova:state', state)
   })
+  terminalService = new TerminalService(
+    (state) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('terminal:state', state) },
+    (id, data) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('terminal:data', { id, data }) },
+  )
+  const confirmTerminalStop = async (reason: string) => {
+    if (!terminalService?.isRunning()) return true
+    const choice = await dialog.showMessageBox(window, {
+      type: 'warning', buttons: ['Keep running', 'Stop terminal'], defaultId: 0, cancelId: 0,
+      title: 'Stop active terminal?', message: reason,
+      detail: 'Commands or OpenCode work running in this terminal will be interrupted.',
+    })
+    return choice.response === 1
+  }
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event) => event.preventDefault())
   window.webContents.on('will-attach-webview', (event) => event.preventDefault())
@@ -150,7 +165,17 @@ function createWindow() {
   })
   ipcMain.on('astra:bounds', (event, request: ViewRequest) => { if (trustedSender(event)) updateAstra(request) })
   ipcMain.handle('nova:getState', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.snapshot() })
-  ipcMain.handle('nova:configure', (event, input: unknown) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.configure(input) })
+  ipcMain.handle('nova:configure', async (event, input: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (terminalService?.isRunning() && input && typeof input === 'object' && 'workspace' in input) {
+      const workspace = validWorkspace(input.workspace)
+      if (workspace.toLowerCase() !== novaService?.snapshot().config.workspace.toLowerCase()) {
+        if (!await confirmTerminalStop('Changing Nova workspace will stop the active terminal.')) return novaService?.snapshot()
+        await terminalService.stop()
+      }
+    }
+    return novaService?.configure(input)
+  })
   ipcMain.handle('nova:connect', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.connect() })
   ipcMain.handle('nova:startServer', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.startServer() })
   ipcMain.handle('nova:createSession', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.createSession() })
@@ -159,6 +184,29 @@ function createWindow() {
   ipcMain.handle('nova:send', (event, message: unknown) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.send(message) })
   ipcMain.handle('nova:stop', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.stop() })
   ipcMain.handle('nova:refresh', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.refreshSessions() })
+  ipcMain.handle('terminal:getState', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return terminalService?.snapshot() })
+  ipcMain.handle('terminal:start', (event, mode: unknown, size: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    const config = novaService?.snapshot().config
+    if (!config || !terminalService) throw new Error('Terminal is unavailable')
+    return terminalService.start(mode, config.workspace, config.executablePath, size)
+  })
+  ipcMain.handle('terminal:stop', async (event) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!await confirmTerminalStop('Stop this terminal session?')) return terminalService?.snapshot()
+    return terminalService?.stop()
+  })
+  ipcMain.handle('terminal:restart', async (event, mode: unknown, size: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!await confirmTerminalStop('Restart this terminal session?')) return terminalService?.snapshot()
+    await terminalService?.stop()
+    const config = novaService?.snapshot().config
+    if (!config || !terminalService) throw new Error('Terminal is unavailable')
+    return terminalService.start(mode, config.workspace, config.executablePath, size)
+  })
+  ipcMain.handle('terminal:clear', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return terminalService?.clear() })
+  ipcMain.on('terminal:write', (event, id: unknown, data: unknown) => { if (trustedSender(event)) { try { terminalService?.write(id, data) } catch { /* Ignore stale or invalid input. */ } } })
+  ipcMain.on('terminal:resize', (event, id: unknown, size: unknown) => { if (trustedSender(event)) { try { terminalService?.resize(id, size) } catch { /* Ignore stale or invalid dimensions. */ } } })
   ipcMain.handle('astra:readStatus', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return astraStatus })
   ipcMain.on('astra:retry', (event) => {
     if (!trustedSender(event)) return
@@ -172,6 +220,8 @@ function createWindow() {
   window.on('resize', () => window.webContents.send('window:resize'))
   window.on('close', () => updateAstra({ visible: false, rect: { x: 0, y: 0, width: 0, height: 0 }, zoom: 1 }))
   window.on('closed', () => {
+    terminalService?.close()
+    terminalService = null
     novaService?.close()
     novaService = null
     for (const view of views.values()) if (!view.webContents.isDestroyed()) view.webContents.close()

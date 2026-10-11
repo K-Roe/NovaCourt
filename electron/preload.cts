@@ -31,5 +31,22 @@ contextBridge.exposeInMainWorld('novaCourt', {
   sendNovaMessage: (message: unknown) => ipcRenderer.invoke('nova:send', message),
   stopNova: () => ipcRenderer.invoke('nova:stop'),
   refreshNova: () => ipcRenderer.invoke('nova:refresh'),
+  getTerminalState: () => ipcRenderer.invoke('terminal:getState'),
+  onTerminalState: (callback: (state: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
+    ipcRenderer.on('terminal:state', listener)
+    return () => ipcRenderer.removeListener('terminal:state', listener)
+  },
+  onTerminalData: (callback: (event: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, event: unknown) => callback(event)
+    ipcRenderer.on('terminal:data', listener)
+    return () => ipcRenderer.removeListener('terminal:data', listener)
+  },
+  startTerminal: (mode: unknown, size: unknown) => ipcRenderer.invoke('terminal:start', mode, size),
+  stopTerminal: () => ipcRenderer.invoke('terminal:stop'),
+  restartTerminal: (mode: unknown, size: unknown) => ipcRenderer.invoke('terminal:restart', mode, size),
+  clearTerminal: () => ipcRenderer.invoke('terminal:clear'),
+  writeTerminal: (id: unknown, data: unknown) => ipcRenderer.send('terminal:write', id, data),
+  resizeTerminal: (id: unknown, size: unknown) => ipcRenderer.send('terminal:resize', id, size),
   testViewBounds: () => ipcRenderer.invoke('test:viewBounds')
 })

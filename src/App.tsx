@@ -105,7 +105,7 @@ export default function App() {
     </header>
 
     {page === 'conversation' ? <main className="conversation-screen">
-      <div className="screen-heading"><div><span className="eyebrow">THE CONVERSATION</span><h1>Three seats. One conversation.</h1></div><div className="stage-label"><span className="stage-line"/> M3 · NOVA DISCUSSION</div></div>
+      <div className="screen-heading"><div><span className="eyebrow">THE CONVERSATION</span><h1>Three seats. One conversation.</h1></div><div className="stage-label"><span className="stage-line"/> M3.1 · NOVA TERMINALS</div></div>
       <div className="court-grid" ref={gridRef} style={{ gridTemplateColumns: `${widths.karl}fr 8px ${widths.astra}fr 8px ${widths.nova}fr` }}>
         <section className="participant-panel karl-panel" aria-label="Karl panel">
           <div className="panel-head"><div className="identity"><div className="avatar karl-avatar">K</div><div><div className="seat">LEFT SEAT · THE OWNER</div><h2>Karl</h2></div></div><span className="status ready"><span/> READY</span></div>

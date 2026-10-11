@@ -30,7 +30,7 @@ function validEndpoint(value: unknown): string {
   if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) || !url.port || url.pathname !== '/' || url.search || url.hash || url.username || url.password) throw new Error('Endpoint must be http://127.0.0.1:<port>/')
   return url.origin
 }
-function validWorkspace(value: unknown): string {
+export function validWorkspace(value: unknown): string {
   if (typeof value !== 'string' || !isAbsolute(value)) throw new Error('Choose an absolute repository path')
   const path = realpathSync(value)
   if (!statSync(path).isDirectory() || !existsSync(join(path, '.git'))) throw new Error('Workspace must be an existing Git repository')
@@ -39,7 +39,7 @@ function validWorkspace(value: unknown): string {
   if (!subpath || subpath.startsWith('..') || isAbsolute(subpath)) throw new Error('Workspace must be inside your repos directory')
   return path
 }
-function validExecutable(value: unknown): string {
+export function validExecutable(value: unknown): string {
   if (typeof value !== 'string' || !isAbsolute(value)) throw new Error('Choose an absolute OpenCode executable path')
   const path = realpathSync(value)
   if (!statSync(path).isFile() || (process.platform === 'win32' && basename(path).toLowerCase() !== 'opencode.exe')) throw new Error('Choose the OpenCode .exe file')

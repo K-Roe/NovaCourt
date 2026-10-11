@@ -15,6 +15,20 @@ export type NovaState = {
   busy: boolean
   deliveryUncertain: boolean
 }
+export type TerminalMode = 'opencode' | 'powershell'
+export type TerminalState = {
+  id: string | null
+  mode: TerminalMode | null
+  status: 'idle' | 'running' | 'stopping' | 'exited' | 'error'
+  workspace: string | null
+  pid: number | null
+  cols: number | null
+  rows: number | null
+  exitCode: number | null
+  error: string | null
+  buffer: string
+}
+export type TerminalSize = { cols: number; rows: number }
 declare global {
   interface Window {
     novaCourt: {
@@ -36,6 +50,15 @@ declare global {
       sendNovaMessage: (message: string) => Promise<NovaState>
       stopNova: () => Promise<NovaState>
       refreshNova: () => Promise<NovaState>
+      getTerminalState: () => Promise<TerminalState>
+      onTerminalState: (callback: (state: TerminalState) => void) => () => void
+      onTerminalData: (callback: (event: { id: string; data: string }) => void) => () => void
+      startTerminal: (mode: TerminalMode, size: TerminalSize) => Promise<TerminalState>
+      stopTerminal: () => Promise<TerminalState>
+      restartTerminal: (mode: TerminalMode, size: TerminalSize) => Promise<TerminalState>
+      clearTerminal: () => Promise<TerminalState>
+      writeTerminal: (id: string, data: string) => void
+      resizeTerminal: (id: string, size: TerminalSize) => void
       testViewBounds: () => Promise<{ bounds: ViewRequest['rect'] | null; attached: boolean; registered: boolean }>
     }
   }
