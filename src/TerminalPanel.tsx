@@ -26,6 +26,19 @@ export default function TerminalPanel({ mode, workspace }: { mode: TerminalMode;
     const fit = new FitAddon()
     terminal.loadAddon(fit)
     terminal.open(hostRef.current)
+    // Copy selected text instead of interrupting the process — but only when there IS a selection.
+    //
+    // xterm 6 maps Ctrl+C to ETX (0x03) and preventDefaults the key unconditionally, so on its own
+    // it can never copy and Ctrl+C always risks killing a running command. VS Code solves this with
+    // an explicit `hasSelection()` guard; this is the same guard.
+    //
+    // Returning false hands the key back to the browser, which fires the DOM `copy` event that
+    // xterm already listens for, and that listener writes the selection to the clipboard. Returning
+    // true keeps xterm's normal path, so Ctrl+C with nothing selected still interrupts as usual.
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown' || event.key.toLowerCase() !== 'c' || !event.ctrlKey || event.altKey || event.metaKey) return true
+      return !terminal.hasSelection()
+    })
     terminalRef.current = terminal
     fitRef.current = fit
     const resize = () => {

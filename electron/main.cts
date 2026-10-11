@@ -437,8 +437,34 @@ function createWindow() {
   void novaService.connect()
 }
 
+/**
+ * The application menu.
+ *
+ * `Menu.setApplicationMenu(null)` removed every standard editing role, which is what registers
+ * Ctrl+C / Ctrl+X / Ctrl+V / Ctrl+A as real application accelerators and gives the user a visible
+ * Edit ▸ Copy / Paste fallback. Without it, the renderer had no accelerator-backed editing command
+ * to fall back on, and xterm's DOM-level `copy` / `paste` listeners had nothing to drive them.
+ *
+ * The menu is intentionally minimal: Edit only, with the stock roles and no accelerators of our
+ * own, so Electron installs exactly its standard bindings. Nothing here is a custom command, so
+ * nothing here can be used to reach the terminal, OpenCode, or any privileged surface — the
+ * renderer bridge and its sender checks remain the only way to call into the main process.
+ */
+function applicationMenu() {
+  return Menu.buildFromTemplate([
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' }, { role: 'redo' }, { type: 'separator' },
+        { role: 'cut' }, { role: 'copy' }, { role: 'paste' },
+        { role: 'selectAll' }
+      ]
+    }
+  ])
+}
+
 app.whenReady().then(() => {
-  Menu.setApplicationMenu(null)
+  Menu.setApplicationMenu(applicationMenu())
   createWindow()
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
 })

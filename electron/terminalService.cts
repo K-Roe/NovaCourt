@@ -19,6 +19,8 @@ export type TerminalState = {
 }
 
 const maxBuffer = 1_000_000
+/** Largest single chunk handed to the PTY. Larger payloads are split, never dropped. */
+const MAX_WRITE = 8192
 
 export class TerminalService {
   private process: pty.IPty | null = null
@@ -82,10 +84,18 @@ export class TerminalService {
     }
   }
 
+  /**
+   * Writes terminal input to the PTY.
+   *
+   * The size ceiling exists to stop a single unbounded payload, but a real clipboard paste can
+   * legitimately exceed it — pasting a file listing or a stack trace into a shell is normal use. So
+   * an oversized paste is split into consecutive writes instead of being rejected, because rejecting
+   * it made a large paste look like the app had simply ignored it.
+   */
   write(id: unknown, data: unknown) {
     if (typeof id !== 'string' || id !== this.state.id || !this.process || this.state.status !== 'running') throw new Error('No matching active terminal')
-    if (typeof data !== 'string' || !data || data.length > 8192) throw new Error('Invalid terminal input')
-    this.process.write(data)
+    if (typeof data !== 'string' || !data) throw new Error('Invalid terminal input')
+    for (let offset = 0; offset < data.length; offset += MAX_WRITE) this.process.write(data.slice(offset, offset + MAX_WRITE))
   }
 
   resize(id: unknown, size: unknown) {
