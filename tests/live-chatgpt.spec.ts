@@ -47,7 +47,7 @@ test('M2 live ChatGPT loads in the native middle view and keeps a persistent par
       const bounds = await browserWindow.evaluate((window) => window.getBounds())
       execFileSync('powershell', ['-NoProfile', '-File', resolve(cwd, 'tests', 'capture-window.ps1'), resolve(results, 'm2-live-chatgpt-resized-window.png'), String(bounds.x), String(bounds.y), String(bounds.width), String(bounds.height)])
     }
-    await page.getByRole('button', { name: 'Settings' }).click()
+    await page.getByRole('button', { name: 'Settings', exact: true }).click()
     await expect.poll(async () => (await page.evaluate(() => window.novaCourt.testViewBounds())).attached).toBe(false)
     await page.getByRole('button', { name: 'Conversation', exact: true }).click()
     await expect.poll(async () => (await page.evaluate(() => window.novaCourt.testViewBounds())).attached).toBe(true)

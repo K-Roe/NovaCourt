@@ -1,5 +1,5 @@
 import { test, expect, _electron as electron } from '@playwright/test'
-import { mkdirSync, mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
@@ -9,6 +9,7 @@ test('M2 offline fixture preserves Electron layout, bounds, resize and navigatio
   const testResults = resolve(cwd, 'test-results')
   mkdirSync(testResults, { recursive: true })
   const userData = mkdtempSync(resolve(testResults, 'user-'))
+  writeFileSync(resolve(userData, 'nova.json'), JSON.stringify({ endpoint: 'http://127.0.0.1:65534', workspace: cwd, sessionId: null, modelId: null }))
   const app = await electron.launch({ args: ['.'], cwd, env: { ...process.env, NC_V2_TEST: '1', NC_V2_ASTRA_FIXTURE: '1', NC_V2_USER_DATA: userData } })
   try {
     await expect.poll(() => app.windows().find((candidate) => candidate.url().endsWith('/index.html'))?.url()).toContain('/index.html')
@@ -19,6 +20,8 @@ test('M2 offline fixture preserves Electron layout, bounds, resize and navigatio
     await expect(page.getByRole('heading', { name: 'Karl' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Astra' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Nova', exact: true })).toBeVisible()
+    await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getNovaState())).connection).toBe('error')
+    await expect(page.getByText('Nova is not connected.')).toBeVisible()
     await expect.poll(async () => (await page.evaluate(() => window.novaCourt.readAstraStatus())).phase).toBe('open')
     expect((await page.evaluate(() => window.novaCourt.readAstraStatus())).source).toBe('fixture')
     await expect.poll(async () => (await page.evaluate(() => window.novaCourt.testViewBounds())).attached).toBe(true)
@@ -77,7 +80,7 @@ test('M2 offline fixture preserves Electron layout, bounds, resize and navigatio
       execFileSync('powershell', ['-NoProfile', '-File', resolve(cwd, 'tests', 'capture-window.ps1'), resolve(cwd, 'test-results', 'm2-offline-fixture-resized-window.png'), String(bounds.x), String(bounds.y), String(bounds.width), String(bounds.height)])
     }
 
-    await page.getByRole('button', { name: 'Settings' }).click()
+    await page.getByRole('button', { name: 'Settings', exact: true }).click()
     await expect(page.getByRole('heading', { name: 'Make room for every voice.' })).toBeVisible()
     await expect.poll(async () => (await page.evaluate(() => window.novaCourt.testViewBounds())).attached).toBe(false)
     await page.getByRole('button', { name: 'Conversation', exact: true }).click()

@@ -16,5 +16,20 @@ contextBridge.exposeInMainWorld('novaCourt', {
     return () => ipcRenderer.removeListener('astra:status', listener)
   },
   retryAstra: () => ipcRenderer.send('astra:retry'),
+  getNovaState: () => ipcRenderer.invoke('nova:getState'),
+  onNovaState: (callback: (state: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
+    ipcRenderer.on('nova:state', listener)
+    return () => ipcRenderer.removeListener('nova:state', listener)
+  },
+  configureNova: (input: unknown) => ipcRenderer.invoke('nova:configure', input),
+  connectNova: () => ipcRenderer.invoke('nova:connect'),
+  startNovaServer: () => ipcRenderer.invoke('nova:startServer'),
+  createNovaSession: () => ipcRenderer.invoke('nova:createSession'),
+  selectNovaSession: (id: unknown) => ipcRenderer.invoke('nova:selectSession', id),
+  chooseNovaModel: (id: unknown) => ipcRenderer.invoke('nova:chooseModel', id),
+  sendNovaMessage: (message: unknown) => ipcRenderer.invoke('nova:send', message),
+  stopNova: () => ipcRenderer.invoke('nova:stop'),
+  refreshNova: () => ipcRenderer.invoke('nova:refresh'),
   testViewBounds: () => ipcRenderer.invoke('test:viewBounds')
 })

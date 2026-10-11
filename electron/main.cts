@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu, session, WebContentsView, type Recta
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { OpenCodeService } from './openCodeService.cjs'
 
 type PanelWidths = { karl: number; astra: number; nova: number }
 type Settings = { panelWidths: PanelWidths }
@@ -16,6 +17,7 @@ const views = new Map<string, WebContentsView>()
 let mainWindow: BrowserWindow | null = null
 let attached = false
 let lastBounds: Rectangle | null = null
+let novaService: OpenCodeService | null = null
 let astraStatus: AstraStatus = fixtureMode
   ? { source: 'fixture', phase: 'loading', detail: 'Loading local fixture' }
   : { source: 'chatgpt', phase: 'loading', detail: 'Loading chatgpt.com' }
@@ -99,6 +101,9 @@ function createWindow() {
     webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true }
   })
   mainWindow = window
+  novaService = new OpenCodeService(app.getPath('userData'), (state) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('nova:state', state)
+  })
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event) => event.preventDefault())
   window.webContents.on('will-attach-webview', (event) => event.preventDefault())
@@ -144,6 +149,16 @@ function createWindow() {
     return settings
   })
   ipcMain.on('astra:bounds', (event, request: ViewRequest) => { if (trustedSender(event)) updateAstra(request) })
+  ipcMain.handle('nova:getState', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.snapshot() })
+  ipcMain.handle('nova:configure', (event, input: unknown) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.configure(input) })
+  ipcMain.handle('nova:connect', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.connect() })
+  ipcMain.handle('nova:startServer', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.startServer() })
+  ipcMain.handle('nova:createSession', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.createSession() })
+  ipcMain.handle('nova:selectSession', (event, id: unknown) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.selectSession(id) })
+  ipcMain.handle('nova:chooseModel', (event, id: unknown) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.chooseModel(id) })
+  ipcMain.handle('nova:send', (event, message: unknown) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.send(message) })
+  ipcMain.handle('nova:stop', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.stop() })
+  ipcMain.handle('nova:refresh', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return novaService?.refreshSessions() })
   ipcMain.handle('astra:readStatus', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return astraStatus })
   ipcMain.on('astra:retry', (event) => {
     if (!trustedSender(event)) return
@@ -157,6 +172,8 @@ function createWindow() {
   window.on('resize', () => window.webContents.send('window:resize'))
   window.on('close', () => updateAstra({ visible: false, rect: { x: 0, y: 0, width: 0, height: 0 }, zoom: 1 }))
   window.on('closed', () => {
+    novaService?.close()
+    novaService = null
     for (const view of views.values()) if (!view.webContents.isDestroyed()) view.webContents.close()
     views.clear()
     mainWindow = null
@@ -165,6 +182,7 @@ function createWindow() {
   if (process.env.NC_V2_DEV_URL) void window.loadURL(process.env.NC_V2_DEV_URL)
   else if (existsSync(resolve(__dirname, '../dist/index.html'))) void window.loadFile(resolve(__dirname, '../dist/index.html'))
   else throw new Error('Renderer build missing. Run npm run build before npm start.')
+  void novaService.connect()
 }
 
 app.whenReady().then(() => {
