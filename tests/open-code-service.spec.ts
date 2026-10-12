@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { createServer, type ServerResponse } from 'node:http'
-import { mkdirSync, mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
@@ -61,7 +61,7 @@ test('OpenCode protocol: unavailable, connected, chat-only permissions, history 
     await service.stop()
     expect(aborted).toBe(true)
     freeCost = 1
-    await expect(service.send('Do not send to a now-paid model')).rejects.toThrow('listed free model')
+    await expect(service.send('Do not send to a now-paid model')).rejects.toThrow('listed Nova model')
     expect(promptCount).toBe(1)
     freeCost = 0
     await service.selectSession('ses_unsafe')
@@ -80,4 +80,92 @@ test('OpenCode protocol: unavailable, connected, chat-only permissions, history 
     expect(state.connection).toBe('error')
     expect(state.error).toBeTruthy()
   } finally { unavailable.close() }
+})
+
+test('Nova defaults to opencode-go/space-bunny while the free-only guard still holds', async () => {
+  const dataPath = mkdtempSync(resolve(cwd, 'test-results', 'mock-spacebunny-'))
+  let promptBody: any = null
+  const safe = { id: 'ses_safe', title: 'Safe discussion', directory: cwd, time: { updated: Date.now() }, permission: [{ permission: '*', pattern: '*', action: 'deny' }] }
+  const json = (res: ServerResponse, value: unknown, status = 200) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)) }
+  const server = createServer((req, res) => {
+    const url = new URL(req.url || '/', 'http://127.0.0.1')
+    if (url.pathname === '/global/health') return json(res, { healthy: true, version: '1.18.35' })
+    if (url.pathname === '/doc') return json(res, { paths: { '/session': { post: { requestBody: { content: { 'application/json': { schema: { properties: { permission: {} } } } } } } }, '/session/{sessionID}/prompt_async': { post: { requestBody: { content: { 'application/json': { schema: { properties: { tools: {} } } } } } } }, '/session/{sessionID}/abort': { post: {} }, '/event': { get: {} } } })
+    if (url.pathname === '/provider') return json(res, { connected: ['opencode-go'], all: [{ id: 'opencode-go', name: 'opencode-go', models: { 'space-bunny': { id: 'space-bunny', name: 'Space Bunny', cost: { input: 3, output: 15 } }, 'other-paid': { id: 'other-paid', name: 'Other Paid', cost: { input: 2, output: 9 } } } }] })
+    if (url.pathname === '/session' && req.method === 'GET') return json(res, [safe])
+    if (url.pathname === '/session' && req.method === 'POST') return json(res, safe)
+    if (url.pathname === '/session/status') return json(res, {})
+    if (url.pathname === '/session/ses_safe') return json(res, safe)
+    if (url.pathname === '/session/ses_safe/message') return json(res, [])
+    if (url.pathname === '/experimental/tool/ids') return json(res, ['bash', 'edit', 'read', 'task'])
+    if (url.pathname === '/session/ses_safe/prompt_async' && req.method === 'POST') { let body = ''; req.on('data', (chunk) => body += chunk); req.on('end', () => { promptBody = JSON.parse(body); res.writeHead(204); res.end() }); return }
+    if (url.pathname === '/session/ses_safe/abort') return json(res, true)
+    if (url.pathname === '/event') { res.writeHead(200, { 'content-type': 'text/event-stream', connection: 'keep-alive' }); res.write('data: {"type":"server.connected"}\n\n'); req.on('close', () => res.end()); return }
+    json(res, { error: 'Missing mock route' }, 404)
+  })
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('Missing mock address')
+  const service = new OpenCodeService(dataPath, () => {})
+  try {
+    service.configure({ endpoint: `http://127.0.0.1:${address.port}`, executablePath: 'C:\\missing\\opencode.exe', workspace: cwd })
+    const connected = await service.connect()
+    // Space Bunny is admitted despite costing money; the sibling paid model is still refused.
+    expect(connected.models).toEqual([{ id: 'opencode-go:space-bunny', name: 'opencode-go · Space Bunny', providerID: 'opencode-go', modelID: 'space-bunny' }])
+    expect(connected.config.modelId).toBe('opencode-go:space-bunny')
+    await service.createSession()
+    await service.send('Hello Nova')
+    expect(promptBody.model).toEqual({ providerID: 'opencode-go', modelID: 'space-bunny' })
+    expect(promptBody.agent).toBe('plan')
+    expect(promptBody.tools).toEqual({ bash: false, edit: false, read: false, task: false })
+    await expect(service.chooseModel('opencode-go:other-paid')).rejects.toThrow('listed Nova model')
+  } finally {
+    service.close()
+    await new Promise<void>((done) => server.close(() => done()))
+  }
+
+  // A deliberate later choice must survive reconnect; the override is one-time only.
+  const second = new OpenCodeService(dataPath, () => {})
+  try {
+    second.configure({ endpoint: `http://127.0.0.1:${address.port}`, executablePath: 'C:\\missing\\opencode.exe', workspace: cwd })
+    expect(second.snapshot().config.modelId).toBe('opencode-go:space-bunny')
+  } finally {
+    second.close()
+    await new Promise<void>((done) => server.close(() => done()))
+  }
+})
+
+test('a previously saved free model is replaced by Space Bunny, not preserved', async () => {
+  const dataPath = mkdtempSync(resolve(cwd, 'test-results', 'mock-migrate-'))
+  const safe = { id: 'ses_safe', title: 'Safe discussion', directory: cwd, time: { updated: Date.now() }, permission: [{ permission: '*', pattern: '*', action: 'deny' }] }
+  const json = (res: ServerResponse, value: unknown, status = 200) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)) }
+  const server = createServer((req, res) => {
+    const url = new URL(req.url || '/', 'http://127.0.0.1')
+    if (url.pathname === '/global/health') return json(res, { healthy: true, version: '1.18.35' })
+    if (url.pathname === '/doc') return json(res, { paths: { '/session': { post: { requestBody: { content: { 'application/json': { schema: { properties: { permission: {} } } } } } } }, '/session/{sessionID}/prompt_async': { post: { requestBody: { content: { 'application/json': { schema: { properties: { tools: {} } } } } } } }, '/session/{sessionID}/abort': { post: {} }, '/event': { get: {} } } })
+    if (url.pathname === '/provider') return json(res, { connected: ['opencode-go', 'openrouter'], all: [{ id: 'opencode-go', name: 'opencode-go', models: { 'space-bunny': { id: 'space-bunny', name: 'Space Bunny', cost: { input: 3, output: 15 } } } }, { id: 'openrouter', name: 'OpenRouter', models: { 'poolside/laguna-s-2.1:free': { id: 'poolside/laguna-s-2.1:free', name: 'Laguna', cost: { input: 0, output: 0 } } } }] })
+    if (url.pathname === '/session' && req.method === 'GET') return json(res, [safe])
+    if (url.pathname === '/session' && req.method === 'POST') return json(res, safe)
+    if (url.pathname === '/session/status') return json(res, {})
+    if (url.pathname === '/session/ses_safe') return json(res, safe)
+    if (url.pathname === '/session/ses_safe/message') return json(res, [])
+    if (url.pathname === '/experimental/tool/ids') return json(res, ['bash'])
+    if (url.pathname === '/session/ses_safe/abort') return json(res, true)
+    if (url.pathname === '/event') { res.writeHead(200, { 'content-type': 'text/event-stream', connection: 'keep-alive' }); res.write('data: {"type":"server.connected"}\n\n'); req.on('close', () => res.end()); return }
+    json(res, { error: 'Missing mock route' }, 404)
+  })
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('Missing mock address')
+  writeFileSync(resolve(dataPath, 'nova.json'), JSON.stringify({ endpoint: `http://127.0.0.1:${address.port}`, workspace: cwd, sessionId: null, modelId: 'openrouter:poolside/laguna-s-2.1:free' }))
+  const service = new OpenCodeService(dataPath, () => {})
+  try {
+    const connected = await service.connect()
+    // The old free default is still a legitimate *choice*, but it is not grandfathered in.
+    expect(connected.models.map((model: any) => model.id).sort()).toEqual(['opencode-go:space-bunny', 'openrouter:poolside/laguna-s-2.1:free'])
+    expect(connected.config.modelId).toBe('opencode-go:space-bunny')
+  } finally {
+    service.close()
+    await new Promise<void>((done) => server.close(() => done()))
+  }
 })

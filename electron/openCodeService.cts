@@ -5,7 +5,7 @@ import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { getNovaPersonality, buildDiscussionSystem, invalidatePersonalityCache } from './novaPersonality.cjs'
 
 type Connection = 'disconnected' | 'connecting' | 'connected' | 'error'
-type Config = { endpoint: string; executablePath: string; workspace: string; sessionId: string | null; modelId: string | null }
+type Config = { endpoint: string; executablePath: string; workspace: string; sessionId: string | null; modelId: string | null; novaDefaultApplied?: boolean }
 type Session = { id: string; title: string; directory: string; safe: boolean; updated: number }
 type Message = { id: string; role: 'user' | 'assistant'; text: string; created: number; tools: { name: string; status: string }[]; error?: string }
 type Model = { id: string; name: string; providerID: string; modelID: string }
@@ -14,6 +14,11 @@ export type NovaState = { connection: Connection; error: string | null; version:
 const denyAll = [{ permission: '*', pattern: '*', action: 'deny' }] as const
 const sessionPattern = /^ses[\w-]{1,128}$/
 const maxText = 20_000
+const defaultModelID = 'opencode-go:space-bunny'
+const allowedModelProviders = ['opencode', 'openrouter', 'opencode-go']
+function isFreeModel(model: any): boolean {
+  return /(-free|:free)$/.test(model.id) && model.cost?.input === 0 && model.cost?.output === 0
+}
 
 function defaultExecutable() {
   if (process.platform === 'win32') return join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'npm', 'node_modules', 'opencode-ai', 'bin', 'opencode.exe')
@@ -91,7 +96,7 @@ export class OpenCodeService {
     let config = fallback
     try {
       const saved = JSON.parse(readFileSync(join(dataPath, 'nova.json'), 'utf8'))
-      config = { endpoint: validEndpoint(saved.endpoint), executablePath: typeof saved.executablePath === 'string' ? saved.executablePath : fallback.executablePath, workspace: typeof saved.workspace === 'string' ? saved.workspace : fallback.workspace, sessionId: typeof saved.sessionId === 'string' && sessionPattern.test(saved.sessionId) ? saved.sessionId : null, modelId: typeof saved.modelId === 'string' ? saved.modelId : null }
+      config = { endpoint: validEndpoint(saved.endpoint), executablePath: typeof saved.executablePath === 'string' ? saved.executablePath : fallback.executablePath, workspace: typeof saved.workspace === 'string' ? saved.workspace : fallback.workspace, sessionId: typeof saved.sessionId === 'string' && sessionPattern.test(saved.sessionId) ? saved.sessionId : null, modelId: typeof saved.modelId === 'string' ? saved.modelId : null, novaDefaultApplied: saved.novaDefaultApplied === true }
     } catch { /* First launch or invalid config. */ }
     const installedVersion = this.detectVersion(config.executablePath)
     this.state = { connection: 'disconnected', error: null, version: null, installedVersion, executableFound: !!installedVersion, config, sessions: [], messages: [], models: [], busy: false, deliveryUncertain: false }
@@ -116,7 +121,7 @@ export class OpenCodeService {
     const workspace = validWorkspace(data.workspace)
     const previous = this.state.config
     this.disconnect()
-    this.state.config = { endpoint, executablePath, workspace, sessionId: previous.workspace.toLowerCase() === workspace.toLowerCase() ? previous.sessionId : null, modelId: previous.modelId }
+    this.state.config = { endpoint, executablePath, workspace, sessionId: previous.workspace.toLowerCase() === workspace.toLowerCase() ? previous.sessionId : null, modelId: previous.modelId, novaDefaultApplied: previous.novaDefaultApplied }
     this.state.installedVersion = this.detectVersion(executablePath)
     this.state.executableFound = !!this.state.installedVersion
     this.state.error = null
@@ -163,8 +168,21 @@ export class OpenCodeService {
   }
   private async refreshModels(autoSelect = true) {
     const providers = await this.request(this.path('/provider'), undefined, 12000)
-    this.state.models = (providers?.all || []).filter((provider: any) => ['opencode', 'openrouter'].includes(provider.id) && providers.connected?.includes(provider.id)).flatMap((provider: any) => Object.values(provider.models || {}).filter((model: any) => typeof model.id === 'string' && /(-free|:free)$/.test(model.id) && model.cost?.input === 0 && model.cost?.output === 0).map((model: any) => ({ id: `${provider.id}:${model.id}`, name: `${provider.name || provider.id} · ${model.name || model.id}`, providerID: provider.id, modelID: model.id }))).sort((a: Model, b: Model) => a.name.localeCompare(b.name))
-    if (!this.state.models.some((model) => model.id === this.state.config.modelId)) this.state.config.modelId = autoSelect && this.state.config.modelId === null ? this.state.models.find((model) => model.id === 'openrouter:poolside/laguna-s-2.1:free')?.id || this.state.models[0]?.id || null : null
+    this.state.models = (providers?.all || []).filter((provider: any) => allowedModelProviders.includes(provider.id) && providers.connected?.includes(provider.id)).flatMap((provider: any) => Object.values(provider.models || {}).filter((model: any) => typeof model.id === 'string' && (isFreeModel(model) || (provider.id === 'opencode-go' && model.id === 'space-bunny'))).map((model: any) => ({ id: `${provider.id}:${model.id}`, name: `${provider.name || provider.id} · ${model.name || model.id}`, providerID: provider.id, modelID: model.id }))).sort((a: Model, b: Model) => a.name.localeCompare(b.name))
+    const listed = this.state.models.some((model) => model.id === this.state.config.modelId)
+    const preferred = this.state.models.find((model) => model.id === defaultModelID)
+    if (autoSelect && !this.state.config.novaDefaultApplied) {
+      // One-time migration to Space Bunny. Deliberately independent of whether the previously saved
+      // model is still listed, otherwise an existing selection would silently survive the upgrade.
+      if (preferred) {
+        this.state.config.modelId = preferred.id
+        this.state.config.novaDefaultApplied = true
+      } else if (this.state.config.modelId === null) {
+        this.state.config.modelId = this.state.models[0]?.id || null
+      }
+    } else if (!listed) {
+      this.state.config.modelId = autoSelect && this.state.config.modelId === null ? this.state.models[0]?.id || null : null
+    }
     this.persist()
   }
   private async refreshToolIds() {
@@ -209,7 +227,7 @@ export class OpenCodeService {
     return this.snapshot()
   }
   async chooseModel(id: unknown) {
-    if (typeof id !== 'string' || !this.state.models.some((model) => model.id === id)) throw new Error('Choose a listed free model')
+    if (typeof id !== 'string' || !this.state.models.some((model) => model.id === id)) throw new Error('Choose a listed Nova model')
     this.state.config.modelId = id; this.persist(); this.emit()
     return this.snapshot()
   }
@@ -225,7 +243,7 @@ export class OpenCodeService {
     const session = await this.request(this.path(`/session/${encodeURIComponent(id)}`))
     if (!parseSession(session, this.state.config.workspace, this.toolIds)?.safe) throw new Error('This session does not enforce chat-only tool denial')
     const model = this.state.models.find((candidate) => candidate.id === this.state.config.modelId)
-    if (!model) throw new Error('Select a listed free model')
+    if (!model) throw new Error('Select a listed Nova model')
     const tools = Object.fromEntries(this.toolIds.map((tool) => [tool, false]))
     this.pendingUntil = Date.now() + 3000
     this.state.busy = true; this.state.deliveryUncertain = false; this.emit()

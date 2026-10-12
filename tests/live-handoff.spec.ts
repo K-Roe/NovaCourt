@@ -45,8 +45,9 @@ test('M4 real Nova handoff delivers a message and records the genuine reply', as
     await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getNovaState())).connection, { timeout: 25_000 }).toBe('connected')
     await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getNovaState())).models.length, { timeout: 40_000 }).toBeGreaterThan(0)
     const models = (await page.evaluate(() => window.novaCourt.getNovaState())).models
-    // Every listed model is free by construction. Assert it rather than trusting the comment.
-    expect(models.every((model) => /(-free|:free)$/.test(model.id))).toBe(true)
+    // Every listed model is free, apart from the single permitted Space Bunny exception. Assert it rather
+    // than trusting the comment.
+    expect(models.every((model) => /(-free|:free)$/.test(model.id) || model.id === 'opencode-go:space-bunny')).toBe(true)
 
 await page.getByRole('button', { name: 'New Nova session' }).click()
     await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getNovaState())).config.sessionId).toBeTruthy()
@@ -62,7 +63,7 @@ await page.getByRole('button', { name: 'New Nova session' }).click()
     let delivered = false
 
     for (const [attempt, modelId] of candidates.entries()) {
-      await page.getByRole('combobox', { name: 'Free Nova model' }).selectOption(modelId)
+      await page.getByRole('combobox', { name: 'Nova model' }).selectOption(modelId)
       const token = `NOVAM4HANDOFF${attempt}`
       await page.locator('select[aria-label="Recipient"]').selectOption('nova')
       await page.locator('textarea[aria-label="Message the court"]').fill(`Reply with exactly ${token} and nothing else. Do not use any tools.`)
