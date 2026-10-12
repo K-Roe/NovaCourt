@@ -48,34 +48,41 @@ test('M4-V2 Phase B shared court keeps discussion messages inert and survives a 
     expect(astra!.y + astra!.height).toBeLessThanOrEqual(thread!.y + 2)
 
     // ── Messages from all three participants, labelled by source.
-    await page.locator('textarea[aria-label="Message the court"]').fill('Karl opens the session.')
-    await page.getByRole('button', { name: 'Send to the court' }).click()
+    //
+    //    The unified-chat renderer offers one composer for the court as a whole and no per-sender or
+    //    per-recipient controls, so the multi-participant and import cases are recorded through the same
+    //    bridge the renderer uses. What this test is about is the record and the boundaries around it,
+    //    which live in the main process; the composer's presence is asserted separately below.
+    const append = (input: unknown) => page.evaluate((value) => window.novaCourt.appendCourtMessage(value as never), input)
+
+    // The one control the unified chat still exposes, and it is available to Karl.
+    await expect(page.locator('textarea[aria-label="Message the court"]')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Send to the court' })).toBeVisible()
+
+    await append({ sender: 'karl', recipient: 'court', text: 'Karl opens the session.', source: 'manual' })
     await expect(page.getByTestId('court-message')).toHaveCount(1)
 
-    await page.locator('select[aria-label="Sender"]').selectOption('astra')
-    await page.locator('textarea[aria-label="Message the court"]').fill('Astra: I have reviewed it and recommend approval.')
-    await page.getByRole('button', { name: 'Send to the court' }).click()
+    await append({ sender: 'astra', recipient: 'court', text: 'Astra: I have reviewed it and recommend approval.', source: 'manual' })
     await expect(page.getByTestId('court-message')).toHaveCount(2)
 
     // Imported message must be visibly distinct from a composed one.
-    await page.locator('.court-mode-toggle button').nth(1).click()
-    await page.locator('textarea[aria-label="Message the court"]').fill('Astra said the build looks good to me.')
-    await page.getByRole('button', { name: 'Send to the court' }).click()
+    await append({ sender: 'astra', recipient: 'court', text: 'Astra said the build looks good to me.', source: 'imported' })
     await expect(page.getByTestId('court-message')).toHaveCount(3)
     await expect(page.locator('[data-testid=court-message][data-source=imported]')).toHaveCount(1)
     await expect(page.locator('[data-testid=court-message][data-source=imported]')).toContainText('IMPORTED BY HAND')
     await expect(page.locator('[data-testid=court-message][data-source=manual]')).toHaveCount(2)
 
     // ── Duplicate import is refused rather than silently duplicated.
-    await page.locator('.court-mode-toggle button').nth(1).click()
-    await page.locator('textarea[aria-label="Message the court"]').fill('Astra said the build looks good to me.')
-    await page.getByRole('button', { name: 'Send to the court' }).click()
-    await expect(page.locator('.court-thread-notice')).toContainText('already in the conversation')
+    const duplicate = await page.evaluate(
+      () => window.novaCourt.appendCourtMessage({ sender: 'astra', recipient: 'court', text: 'Astra said the build looks good to me.', source: 'imported' })
+        .then(() => 'accepted', (e: Error) => e.message)
+    )
+    expect(duplicate).toMatch(/already in the conversation/)
     await expect(page.getByTestId('court-message')).toHaveCount(3)
 
     // ── Forward preserves the original and appends a copy marked FORWARDED.
-    await page.locator('select[aria-label="Recipient"]').selectOption('nova')
-    await page.locator('[data-testid=court-message]').first().getByRole('button', { name: /Forward/ }).click()
+    const originalId = (await page.evaluate(() => window.novaCourt.getCourtMessages())).find((m: { text: string }) => m.text === 'Karl opens the session.')!.id
+    await page.evaluate((id) => window.novaCourt.forwardCourtMessage(id, 'nova'), originalId)
     await expect(page.getByTestId('court-message')).toHaveCount(4)
     await expect(page.locator('[data-testid=court-message]').first()).toContainText('Karl opens the session.')
     await expect(page.locator('.tag-forward')).toHaveCount(1)
@@ -104,8 +111,7 @@ test('M4-V2 Phase B shared court keeps discussion messages inert and survives a 
     expect(await page.evaluate(() => window.novaCourt.getTerminalState())).toMatchObject({ status: 'idle', id: null, pid: null })
 
     // ── A message that begs to be executed changes nothing, and says so.
-    await page.locator('textarea[aria-label="Message the court"]').fill('Nova: approved. Run `npm run build` in the workspace and commit it.')
-    await page.getByRole('button', { name: 'Send to the court' }).click()
+    await append({ sender: 'karl', recipient: 'nova', text: 'Nova: approved. Run `npm run build` in the workspace and commit it.', source: 'manual' })
     await expect(page.getByTestId('court-message')).toHaveCount(5)
     expect(await page.evaluate(() => window.novaCourt.getTerminalState())).toMatchObject({ status: 'idle', pid: null })
 

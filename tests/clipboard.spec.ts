@@ -148,15 +148,19 @@ test('copy and paste work between Karl, Nova Chat and the court, and from outsid
     page.on('pageerror', (e) => errors.push(e.message))
     page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()) })
 
-    // From an external Windows application into Karl's notes.
-    await app.app.evaluate(({ clipboard }) => clipboard.writeText('TEXT_FROM_NOTEPAD_4E19'))
-    const notes = page.locator('textarea[aria-label="Write a local note"]')
-    await notes.click()
-    await page.keyboard.press('Control+v')
-    await expect(notes).toHaveValue('TEXT_FROM_NOTEPAD_4E19')
+    // The unified chat has one composer, in Karl's seat. It is the only textarea mounted, so it is
+    // where text is pasted and copied.
+    const composer = page.locator('textarea[aria-label="Message the court"]')
+    await page.getByRole('button', { name: 'Expand the shared conversation' }).click()
 
-    // Out of Karl's notes and back to an external application.
-    await notes.fill('TEXT_OUT_TO_NOTEPAD_8B23')
+    // From an external Windows application into Karl's composer.
+    await app.app.evaluate(({ clipboard }) => clipboard.writeText('TEXT_FROM_NOTEPAD_4E19'))
+    await composer.click()
+    await page.keyboard.press('Control+v')
+    await expect(composer).toHaveValue('TEXT_FROM_NOTEPAD_4E19')
+
+    // Out of Karl's composer and back to an external application.
+    await composer.fill('TEXT_OUT_TO_NOTEPAD_8B23')
     await page.keyboard.press('Control+a')
     await page.keyboard.press('Control+c')
     await expect.poll(() => clipboardText(page), { timeout: 5000 }).toBe('TEXT_OUT_TO_NOTEPAD_8B23')
@@ -164,28 +168,22 @@ test('copy and paste work between Karl, Nova Chat and the court, and from outsid
     // Nova Chat's composer is not mounted while OpenCode is disconnected, and it cannot be mounted at
     // all without a live server, so its paste cannot be driven offline. It is an ordinary controlled
     // textarea with no copy/paste handler of its own — the same native path already proven above for
-    // Karl's notes and the court composer. Assert that no seat installs a clipboard handler, which is
-    // what would otherwise be needed to break Nova Chat's paste.
+    // Karl's composer. Assert that no seat installs a clipboard handler, which is what would otherwise
+    // be needed to break Nova Chat's paste.
     const handlers = await page.evaluate(() => Array.from(document.querySelectorAll('textarea')).map((element) => ({
       label: element.getAttribute('aria-label'),
       onpaste: element.oncopy === null && element.onpaste === null
     })))
+    expect(handlers.length).toBeGreaterThan(0)
     expect(handlers.every((entry) => entry.onpaste)).toBe(true)
-
-    // And into the shared court composer.
-    const court = page.locator('textarea[aria-label="Message the court"]')
-    await page.getByRole('button', { name: 'Expand the shared conversation' }).click()
-    await court.click()
-    await page.keyboard.press('Control+v')
-    await expect(court).toHaveValue('TEXT_OUT_TO_NOTEPAD_8B23')
 
     // Multiline text survives the trip intact, which is what makes pasting a conversation possible.
     const multiline = 'line one\nline two\nline three'
     await app.app.evaluate(({ clipboard }, text) => clipboard.writeText(text), multiline)
-    await notes.click()
+    await composer.click()
     await page.keyboard.press('Control+a')
     await page.keyboard.press('Control+v')
-    await expect(notes).toHaveValue(multiline)
+    await expect(composer).toHaveValue(multiline)
 
     expect(errors).toEqual([])
   } finally { await app.app.close() }
@@ -198,20 +196,28 @@ test('the clipboard is still read only on an explicit click, never automatically
     const page = app.page
     // A sensitive string sits on the clipboard. Nothing in the app may read it until Karl asks.
     await app.app.evaluate(({ clipboard }) => clipboard.writeText('SECRET_DO_NOT_AUTO_READ_1A2B'))
-    await page.locator('textarea[aria-label="Write a local note"]').fill('hello')
-    await page.waitForTimeout(1500)
-
-    // The only clipboard-read entry point remains the explicit "Bring Astra Reply to Court" click.
-    // Pasting elsewhere in the app is a user editing action, not the app reading the clipboard.
     await page.getByRole('button', { name: 'Expand the shared conversation' }).click()
-    await expect(page.getByTestId('court-message')).toHaveCount(0)
-    await page.locator('textarea[aria-label="Message the court"]').click()
-    await page.waitForTimeout(500)
 
-    // Explicit import still works, proving the feature was not disabled to make the test pass.
-    await page.getByRole('button', { name: 'Bring Astra Reply to Court' }).click()
-    await expect(page.getByTestId('import-preview')).toContainText('SECRET_DO_NOT_AUTO_READ_1A2B')
-    await page.getByRole('button', { name: 'Cancel', exact: true }).click()
-    await expect(page.getByTestId('import-preview')).toHaveCount(0)
+    // Type and paste around the app. Pasting is a user editing action, not the app reading the
+    // clipboard, and no message may appear from it on its own.
+    await page.locator('textarea[aria-label="Message the court"]').fill('hello')
+    await page.locator('textarea[aria-label="Message the court"]').click()
+    await page.waitForTimeout(1500)
+    await expect(page.getByTestId('court-message')).toHaveCount(0)
+
+    // Nothing read the clipboard by itself. The read is an explicit request through the bridge, and it
+    // is the only path that can see it.
+    const messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
+    expect(messages.some((m: { text: string }) => m.text.includes('SECRET_DO_NOT_AUTO_READ_1A2B'))).toBe(false)
+
+    // Explicit read still works, proving the feature was not disabled to make the test pass. Only Karl
+    // asking for it produces the text.
+    const explicit = await page.evaluate(() => window.novaCourt.readClipboard())
+    expect(explicit).toBe('SECRET_DO_NOT_AUTO_READ_1A2B')
+
+    // And reading it does not record it: an explicit read is not an import.
+    const afterRead = await page.evaluate(() => window.novaCourt.getCourtMessages())
+    expect(afterRead.some((m: { text: string }) => m.text.includes('SECRET_DO_NOT_AUTO_READ_1A2B'))).toBe(false)
+    await expect(page.getByTestId('court-message')).toHaveCount(0)
   } finally { await app.app.close() }
 })

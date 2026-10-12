@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowUp, ChevronDown, Gavel, MessageCircle, RotateCcw, Settings2, Users } from 'lucide-react'
+import { Gavel, MessageCircle, RotateCcw, Settings2, Users, Send } from 'lucide-react'
 import type { AstraStatus, PanelWidths, ViewRequest } from './types'
 import Avatar from './Avatar'
 import CourtConversation from './CourtConversation'
@@ -14,6 +14,14 @@ type Note = { id: string; text: string; createdAt: string }
 const defaults: PanelWidths = { karl: 34, astra: 35, nova: 31 }
 const notesKey = 'novacourt-v2:karl-notes'
 const DEFAULT_THREAD_HEIGHT = 320
+
+type UnifiedStatus = 
+  | { phase: 'ready' }
+  | { phase: 'astra-thinking'; detail: string }
+  | { phase: 'awaiting-astra'; detail: string }
+  | { phase: 'nova-thinking'; detail: string }
+  | { phase: 'awaiting-nova'; detail: string }
+  | { phase: 'error'; detail: string }
 
 function readNotes(): Note[] {
   try {
@@ -34,12 +42,13 @@ const MIN_PANEL_ROWS_PX = 330
 function Court() {
   const [page, setPage] = useState<Page>('conversation')
   const [widths, setWidths] = useState<PanelWidths>(defaults)
-  const [notes, setNotes] = useState<Note[]>(readNotes)
+  const [notes] = useState<Note[]>(readNotes)
   const [threadHeight, setThreadHeight] = useState(DEFAULT_THREAD_HEIGHT)
   const [threadCollapsed, setThreadCollapsed] = useState(true)
   const [threadMaximised, setThreadMaximised] = useState(false)
-  const [draft, setDraft] = useState('')
   const [astraStatus, setAstraStatus] = useState<AstraStatus>({ source: 'chatgpt', phase: 'loading', detail: 'Loading ChatGPT website' })
+  const [unifiedStatus, setUnifiedStatus] = useState<UnifiedStatus>({ phase: 'ready' })
+  const [chatDraft, setChatDraft] = useState('')
   const gridRef = useRef<HTMLDivElement>(null)
   const astraViewportRef = useRef<HTMLDivElement>(null)
   const notesEndRef = useRef<HTMLDivElement>(null)
@@ -59,6 +68,12 @@ function Court() {
   useEffect(() => {
     const remove = window.novaCourt.onAstraStatus(setAstraStatus)
     void window.novaCourt.readAstraStatus().then(setAstraStatus)
+    return remove
+  }, [])
+  useEffect(() => {
+    const remove = window.novaCourt.onUnifiedStatus((status) => {
+      setUnifiedStatus(status as UnifiedStatus)
+    })
     return remove
   }, [])
   useEffect(() => { localStorage.setItem(notesKey, JSON.stringify(notes)) }, [notes])
@@ -134,16 +149,26 @@ function Court() {
   function toggleThreadMaximise() {
     setThreadMaximised((value) => !value)
   }
-  function addNote(event: React.FormEvent) {
-    event.preventDefault()
-    const text = draft.trim()
-    if (!text) return
-    setNotes((previous) => [...previous, { id: crypto.randomUUID(), text, createdAt: new Date().toISOString() }].slice(-100))
-    setDraft('')
-    requestAnimationFrame(() => notesEndRef.current?.scrollIntoView({ behavior: 'smooth' }))
-  }
   function resetWidths() { setWidths(defaults); void window.novaCourt.saveWidths({ panelWidths: defaults, threadHeight: DEFAULT_THREAD_HEIGHT }) }
   const astraLabel: Record<AstraStatus['phase'], string> = { loading: 'LOADING', open: astraStatus.source === 'fixture' ? 'OFFLINE FIXTURE' : 'WEBSITE OPEN', 'sign-in-page': 'SIGN-IN PAGE', offline: 'OFFLINE', error: 'LOAD ERROR', blocked: 'LINK BLOCKED' }
+
+  async function sendUnifiedMessage(text: string) {
+    const body = text.trim()
+    if (!body) return
+    setChatDraft('')
+    try {
+      await window.novaCourt.sendUnifiedMessage(body)
+    } catch (cause) {
+      setUnifiedStatus({ phase: 'error', detail: cause instanceof Error ? cause.message : String(cause) })
+    }
+  }
+
+  function handleChatSubmit(event: React.FormEvent) {
+    event.preventDefault()
+    const text = chatDraft.trim()
+    if (!text) return
+    sendUnifiedMessage(text)
+  }
 
   // Calculate effective thread height: maximised takes most of the screen, respecting min panel height
   const effectiveThreadHeight = threadMaximised ? maxThreadHeight() : threadHeight
@@ -168,9 +193,9 @@ function Court() {
         <section className="participant-panel karl-panel" aria-label="Karl panel">
           <div className="panel-head"><div className="identity"><Avatar participant="karl" size={34}/><div><div className="seat">LEFT SEAT · THE OWNER</div><h2>Karl</h2></div></div><span className="status ready"><span/> READY</span></div>
           <div className="panel-body karl-body"><div className="thread-label">LOCAL NOTES <span>{notes.length ? `${notes.length} saved` : 'Private to this app'}</span></div>
-            {notes.length === 0 ? <div className="empty-state"><div className="empty-icon"><MessageCircle size={24}/></div><h3>Your conversation starts here.</h3><p>Capture your thoughts in Karl's seat. Notes stay local; use Nova's composer to send a discussion message.</p></div> : <div className="note-list">{notes.map((note) => <article className="note" key={note.id}><div className="note-meta"><Avatar participant="karl" size={16}/> KARL · LOCAL NOTE <time>{new Date(note.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p>{note.text}</p></article>)}<div ref={notesEndRef}/></div>}
+            {notes.length === 0 ? <div className="empty-state"><div className="empty-icon"><MessageCircle size={24}/></div><h3>Your conversation starts here.</h3><p>Capture your thoughts in Karl's seat. Notes stay local.</p></div> : <div className="note-list">{notes.map((note) => <article className="note" key={note.id}><div className="note-meta"><Avatar participant="karl" size={16}/> KARL · LOCAL NOTE <time>{new Date(note.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p>{note.text}</p></article>)}<div ref={notesEndRef}/></div>}
           </div>
-          <form className="composer" onSubmit={addNote}><div className="composer-to">SAVE TO <strong>KARL'S LOCAL NOTES</strong><ChevronDown size={13}/></div><div className="composer-input"><textarea aria-label="Write a local note" placeholder="Write a thought for the court..." value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} rows={3}/><button type="submit" aria-label="Save local note" disabled={!draft.trim()}><ArrowUp size={18}/></button></div><div className="composer-hint">Enter to save <span>·</span> Shift + Enter for a new line</div></form>
+          <form className="composer" onSubmit={handleChatSubmit}><div className="composer-to">SEND TO <strong>THE COURT</strong></div><div className="composer-input"><textarea aria-label="Message the court" placeholder="Say something to Astra and Nova…" value={chatDraft} onChange={(event) => setChatDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} rows={3} disabled={unifiedStatus.phase !== 'ready'}/><button type="submit" aria-label="Send to the court" disabled={!chatDraft.trim() || unifiedStatus.phase !== 'ready'}><Send size={18}/></button></div><div className="composer-hint">Enter to send <span>·</span> Shift + Enter for a new line <span>·</span> {unifiedStatus.phase !== 'ready' && <span className="waiting-hint">Waiting for agents…</span>}</div></form>
         </section>
         <div className="divider" role="separator" aria-label="Resize Karl and Astra panels" aria-orientation="vertical" onPointerDown={(event) => startResize('left', event)} onPointerMove={moveResize} onPointerUp={stopResize} onLostPointerCapture={stopResize}><span/></div>
         <section className="participant-panel astra-panel" aria-label="Astra panel"><div className="panel-head"><div className="identity"><Avatar participant="astra" size={34}/><div><div className="seat">MIDDLE SEAT · CHATGPT</div><h2>Astra</h2></div></div><div className="astra-controls"><span className={`status astra-${astraStatus.phase}`} title={astraStatus.detail}><span/> {astraLabel[astraStatus.phase]}</span><button className="astra-retry" type="button" onClick={() => window.novaCourt.retryAstra()} title="Reload ChatGPT website" aria-label="Reload Astra website"><RotateCcw size={14}/></button></div></div><div className="native-viewport" ref={astraViewportRef} data-testid="astra-viewport"/></section>
@@ -178,7 +203,7 @@ function Court() {
         <NovaPanel/>
       </div>
       <div className="divider divider-horizontal" role="separator" aria-label="Resize the shared conversation" aria-orientation="horizontal" onPointerDown={startThreadResize} onPointerMove={moveThreadResize} onPointerUp={stopThreadResize} onLostPointerCapture={stopThreadResize}><span/></div>
-      <CourtConversation height={effectiveThreadHeight} collapsed={threadCollapsed} maximised={threadMaximised} onToggle={() => setThreadCollapsed((value) => !value)} onMaximise={toggleThreadMaximise}/>
+      <CourtConversation height={effectiveThreadHeight} collapsed={threadCollapsed} maximised={threadMaximised} onToggle={() => setThreadCollapsed((value) => !value)} onMaximise={toggleThreadMaximise} unifiedStatus={unifiedStatus} />
       </div>
       <div className="screen-foot"><span><span className="foot-dot"/> A local workspace for Karl</span><span>{astraStatus.source === 'fixture' ? 'Offline fixture for layout tests' : 'ChatGPT is manual · account status is not detected'} · Shared court messages are records, not commands</span></div>
       </NovaViewProvider>

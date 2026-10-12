@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Astra conversation fixture</title>
+  <style>
+    *{box-sizing:border-box}html,body{height:100%;margin:0}
+    body{background:#212121;color:#ececec;font:14px/1.6 system-ui,sans-serif;display:flex;flex-direction:column}
+    main{overflow:auto;padding:24px 16px;flex:1}
+    article[data-message-author-role]{max-width:720px;margin:0 auto 28px}
+    .markdown p{margin:0 0 12px}.markdown code{background:#303030;padding:1px 4px;border-radius:4px}
+    .group{position:relative}
+    .actions{margin-top:8px}
+    .actions button{background:none;border:0;color:#b4b4b4;margin-right:10px;cursor:pointer;font:inherit}
+    #composer{border-top:1px solid #3d3d3d;padding:14px 16px;display:flex;justify-content:center}
+    #prompt-textarea{width:720px;min-height:44px;outline:0;border-radius:24px;background:#303030;color:#ececec;padding:12px 16px;font:inherit;white-space:pre-wrap}
+  </style>
+</head>
+<body>
+  <main id="thread" role="main"></main>
+
+  <!--
+    The composer deliberately carries permanently-present decoration whose class names contain
+    "cursor" and "blink". The real ChatGPT composer does the same thing, and an earlier version of the
+    detector asked the whole page whether anything looked animated using class substrings. That test
+    was therefore permanently true here and on the live site, "response complete" could never be
+    satisfied, and every wait ran to its timeout. Keeping the trap in the fixture means this can never
+    silently regress.
+  -->
+  <form id="composer" data-testid="composer">
+    <div id="prompt-textarea" contenteditable="true" role="textbox" aria-label="Message ChatGPT">
+      <span class="composer-caret blinking-cursor" aria-hidden="true"></span>
+    </div>
+    <button type="button" data-testid="composer-send" aria-label="Send prompt" hidden>Send</button>
+  </form>
+
+<script>
+(function () {
+  var thread = document.getElementById('thread');
+  var composer = document.getElementById('composer');
+  var textarea = document.getElementById('prompt-textarea');
+
+  var counter = 0;
+  var stopButton = null;
+  var submitted = [];
+  var pending = [];
+  var submitEnabled = true;
+  var autoReply = null;
+
+  function nextId(role) {
+    counter += 1;
+    return 'fixture-msg-' + role + '-' + counter;
+  }
+
+  function article(role, messageId) {
+    var node = document.createElement('article');
+    node.setAttribute('data-message-author-role', role);
+    node.setAttribute('data-message-id', messageId);
+    node.innerHTML = '<div class="group"><div class="markdown"></div><div class="actions"></div></div>';
+    return node;
+  }
+
+  function renderActions(node, finished) {
+    var actions = node.querySelector('.actions');
+    actions.innerHTML = '';
+    if (role(node) !== 'assistant') return;
+    var copy = document.createElement('button');
+    copy.setAttribute('aria-label', 'Copy response');
+    copy.textContent = 'Copy';
+    actions.appendChild(copy);
+    if (!finished) return;
+    var regenerate = document.createElement('button');
+    regenerate.setAttribute('aria-label', 'Regenerate response');
+    regenerate.setAttribute('data-testid', 'regenerate-button');
+    regenerate.textContent = 'Regenerate';
+    actions.appendChild(regenerate);
+  }
+
+  function role(node) {
+    return node.getAttribute('data-message-author-role');
+  }
+
+  function setProse(node, text) {
+    node.querySelector('.markdown').innerHTML = '';
+    text.split('\n\n').forEach(function (paragraph) {
+      var p = document.createElement('p');
+      p.textContent = paragraph;
+      node.querySelector('.markdown').appendChild(p);
+    });
+  }
+
+  function showStopControl() {
+    if (stopButton) return;
+    stopButton = document.createElement('button');
+    stopButton.setAttribute('data-testid', 'stop-button');
+    stopButton.setAttribute('aria-label', 'Stop generating');
+    stopButton.textContent = 'Stop';
+    composer.appendChild(stopButton);
+  }
+
+  function hideStopControl() {
+    if (!stopButton) return;
+    stopButton.remove();
+    stopButton = null;
+  }
+
+  function submitUser(text) {
+    var node = article('user', nextId('user'));
+    setProse(node, text);
+    renderActions(node, true);
+    thread.appendChild(node);
+    submitted.push(text);
+    textarea.innerHTML = '<span class="composer-caret blinking-cursor" aria-hidden="true"></span>';
+    var send = composer.querySelector('[data-testid="composer-send"]');
+    if (send) send.hidden = true;
+
+    // Replying to the prompt is what the real site does, so a test does not have to guess when to call
+    // respond() and race the detector's polling loop.
+    if (autoReply) {
+      respond(autoReply.text, {
+        delayMs: autoReply.delayMs,
+        streamMs: autoReply.streamMs,
+        useStopControl: autoReply.useStopControl
+      });
+    }
+    return node;
+  }
+
+  function drain() {
+    var job = pending.shift();
+    if (!job) return;
+    if (job.never) return;
+    respond(job.text, { delayMs: job.delayMs, streamMs: job.streamMs, useStopControl: job.useStopControl });
+  }
+
+  /**
+   * Appends an assistant message, optionally after a delay and optionally streaming it in chunks.
+   * Streaming shows the same stop control the real site shows, so the detector's in-progress path is
+   * exercised rather than assumed.
+   */
+  /**
+   * Writes streamed text into a message, optionally appending the caret the real site shows while it is
+   * still generating.
+   *
+   * The caret matters for correctness of the test, not decoration. It is what distinguishes "Astra has
+   * paused mid-sentence" from "Astra has finished": both look like unchanged text across several polls,
+   * and only the presence of a caret tells them apart. A fixture that never renders one would let a
+   * detector with no pause protection pass.
+   */
+  function writeProse(node, written, streaming) {
+    var prose = node.querySelector('.markdown');
+    prose.innerHTML = '';
+    var p = document.createElement('p');
+    p.textContent = written;
+    if (streaming) {
+      var caret = document.createElement('span');
+      caret.className = 'blinking-cursor';
+      caret.setAttribute('aria-hidden', 'true');
+      p.appendChild(caret);
+    }
+    prose.appendChild(p);
+  }
+
+  function respond(text, options) {
+    var settings = options || {};
+    var delayMs = typeof settings.delayMs === 'number' ? settings.delayMs : 0;
+    var streamMs = typeof settings.streamMs === 'number' ? settings.streamMs : 0;
+    var useStopControl = settings.useStopControl !== false;
+    /**
+     * An optional stall in the middle of generation, as a list of `[atFraction, forMs]` pairs. This is
+     * how a test reproduces a pause long enough to have defeated the old one-second stability window.
+     */
+    var pauses = Array.isArray(settings.pauseAt) ? settings.pauseAt : [];
+
+    function start() {
+      var node = article('assistant', nextId('assistant'));
+      thread.appendChild(node);
+      node.scrollIntoView({ block: 'end' });
+
+      if (!streamMs) {
+        setProse(node, text);
+        renderActions(node, true);
+        node.scrollIntoView({ block: 'end' });
+        drain();
+        return;
+      }
+
+      var written = '';
+      var started = Date.now();
+      var pausedUntil = 0;
+      var paused = false;
+      renderActions(node, false);
+      if (useStopControl) showStopControl();
+
+      var step = function () {
+        var now = Date.now();
+
+        // Enter a scripted pause: stop advancing the text but keep the caret and the stop control, so
+        // the reply is visibly unfinished even though its text is momentarily stationary.
+        if (!paused) {
+          for (var i = 0; i < pauses.length; i += 1) {
+            var fraction = Number(pauses[i][0]);
+            var forMs = Number(pauses[i][1]);
+            if (isFinite(fraction) && isFinite(forMs) && written.length >= Math.floor(text.length * fraction)) {
+              paused = true;
+              pausedUntil = now + forMs;
+              break;
+            }
+          }
+        }
+        if (paused && now >= pausedUntil) paused = false;
+
+        if (!paused) {
+          var elapsed = now - started;
+          var wanted = Math.min(text.length, Math.ceil((elapsed / streamMs) * text.length));
+          if (wanted > written.length) written = text.slice(0, wanted);
+          writeProse(node, written, true);
+        }
+
+        if (written.length < text.length) {
+          requestAnimationFrame(step);
+          return;
+        }
+        hideStopControl();
+        writeProse(node, written, false);
+        renderActions(node, true);
+        node.scrollIntoView({ block: 'end' });
+        drain();
+      };
+      requestAnimationFrame(step);
+    }
+
+    if (delayMs > 0) setTimeout(start, delayMs);
+    else start();
+  }
+
+  textarea.addEventListener('keydown', function (event) {
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    // Swallowing the key reproduces a page that is not accepting input, which is the failure the send
+    // path must notice rather than wait out.
+    if (!submitEnabled) return;
+    event.preventDefault();
+    var text = (textarea.innerText || '').replace(/\u00a0/g, ' ').trim();
+    if (!text) return;
+    submitUser(text);
+  });
+
+  window.__astraFixture = {
+    /** Seeds pre-existing assistant messages, for baselines that are not empty. */
+    seed: function (texts) {
+      (texts || []).forEach(function (text) { respond(text, { streamMs: 0 }); });
+      return thread.querySelectorAll('[data-message-author-role="assistant"]').length;
+    },
+    /** Queues a reply, optionally delayed and optionally streamed. */
+    respond: function (text, options) {
+      var settings = options || {};
+      if (settings.queued) { pending.push({ text: text, delayMs: settings.delayMs, streamMs: settings.streamMs, never: settings.never }); return; }
+      respond(text, settings);
+    },
+    /** Replies automatically to every prompt, the way the real site does. */
+    autoReply: function (settings) { autoReply = settings || null; },
+    /** When false the composer silently refuses to submit, as a mis-focused page would. */
+    setSubmitEnabled: function (enabled) { submitEnabled = enabled !== false; },
+    /** Every prompt the composer has accepted, in order. */
+    submitted: function () { return submitted.slice(); },
+    reset: function () {
+      thread.innerHTML = '';
+      submitted.length = 0;
+      pending.length = 0;
+      counter = 0;
+      autoReply = null;
+      submitEnabled = true;
+      hideStopControl();
+      textarea.innerHTML = '<span class="composer-caret blinking-cursor" aria-hidden="true"></span>';
+    }
+  };
+})();
+</script>
+</body>
+</html>

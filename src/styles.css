@@ -14,6 +14,16 @@
 .court-thread-title strong{font-size:10px;letter-spacing:.13em}
 .court-thread-count{font-size:9px;color:#8b8291;font-weight:700;letter-spacing:.04em}
 .court-thread-head-right{display:flex;align-items:center;gap:10px}
+.turn-recovery{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid #4a2f2f;background:#2a1d1d}
+.turn-recovery-text{display:flex;align-items:flex-start;gap:7px;flex:1 1 320px;font-size:10px;line-height:1.5;color:#e6b3ad}
+.turn-recovery-text strong{color:#f4d3ce}
+.turn-recovery-actions{display:flex;gap:7px;flex:none}
+.turn-recovery-actions button{font-size:9px;font-weight:800;letter-spacing:.06em;padding:5px 9px;border-radius:5px;border:1px solid #7d4a45;background:#4a2a27;color:#f4d3ce;cursor:pointer}
+.turn-recovery-actions button:hover:not(:disabled){background:#5c3430}
+.turn-recovery-actions button:disabled{opacity:.55;cursor:default}
+.turn-recovery-actions button.secondary{border-color:#4a4453;background:#2a2533;color:#c3b9cf}
+.turn-recovery-actions button.secondary:hover:not(:disabled){background:#352e40}
+.turn-recovery-notice{flex:1 0 100%;margin:0;font-size:9px;color:#d6a49e}
 .court-handoff-status{font-size:8px;font-weight:800;letter-spacing:.1em;padding:4px 7px;border-radius:5px;background:#2a2533;color:#9b91a6}
 .court-handoff-status.is-awaiting-karl{background:#453318;color:#e9c07f}
 .court-handoff-status.is-awaiting-reply{background:#1f3a35;color:#7fd0bb}

@@ -13,6 +13,8 @@ export type DiscussionTurnRecord = {
   recipient: 'astra' | 'nova' | 'both' | 'karl'
   messageId: string | null
   createdAt: string
+  /** The conversation ID this turn belongs to (same as discussionId for now) */
+  conversationId: string
 }
 
 export type Discussion = {
@@ -26,15 +28,57 @@ export type Discussion = {
   createdAt: string
   updatedAt: string
   completedAt: string | null
+  /** True if this is an automatic three-way conversation (Karl → Astra → Nova → Karl) */
+  isThreeWay: boolean
 }
 
 const DEFAULT_MAX_TURNS = 6
 const MAX_DISCUSSIONS = 100
 
+/**
+ * Who speaks when in an automatic three-way conversation.
+ *
+ * The cycle deliberately includes Karl. Without him the rotation was simply Astra, Nova, Astra, Nova,
+ * forever: Karl opened the discussion and was then never given the floor again, so an automated
+ * conversation could run to its turn limit without him ever being asked to judge the result. Including
+ * him makes the loop what it claims to be — Karl asks, Astra rules, Nova responds, Karl decides.
+ */
+const THREE_WAY_CYCLE: DiscussionTurn[] = ['astra', 'nova', 'karl']
+
+/**
+ * Picks the speaker for a turn number.
+ *
+ * `participants` records which agents take part, and is left as Astra and Nova; the court cycle is
+ * applied on top for three-way discussions so that the participants list keeps meaning "the agents
+ * involved" rather than "the order of the rota".
+ */
+function speakerFor(active: Discussion, turnNumber: number): DiscussionTurn {
+  if (active.isThreeWay) return THREE_WAY_CYCLE[(turnNumber - 1) % THREE_WAY_CYCLE.length]
+  return active.participants[(turnNumber - 1) % active.participants.length]
+}
+
+/**
+ * Works out who a turn's message is addressed to.
+ *
+ * In an automated conversation a turn is addressed to whoever speaks on the *following* turn, which is
+ * what makes the loop legible in the transcript: Astra's ruling is marked as going to Nova, Nova's reply
+ * is marked as going to Karl, and Karl's is marked as going to Astra again.
+ */
+function recipientFor(active: Discussion, turnNumber: number): DiscussionTurnRecord['recipient'] {
+  if (active.isThreeWay) return speakerFor(active, turnNumber + 1)
+
+  const speaker = speakerFor(active, turnNumber)
+  if (active.participants.length === 2 && active.participants.includes('astra') && active.participants.includes('nova')) {
+    return speaker === 'astra' ? 'nova' : 'astra'
+  }
+  return 'both'
+}
+
 export type DiscussionInput = {
   topic: unknown
   maxTurns?: unknown
   participants?: unknown
+  isThreeWay?: unknown
 }
 
 export class DiscussionService {
@@ -86,7 +130,8 @@ export class DiscussionService {
       participants: entry.participants as DiscussionTurn[],
       createdAt: entry.createdAt,
       updatedAt: entry.updatedAt,
-      completedAt: entry.completedAt
+      completedAt: entry.completedAt,
+      isThreeWay: entry.isThreeWay === true
     }
   }
 
@@ -107,7 +152,8 @@ export class DiscussionService {
       speaker: entry.speaker as DiscussionTurn,
       recipient: entry.recipient as DiscussionTurnRecord['recipient'],
       messageId: entry.messageId,
-      createdAt: entry.createdAt
+      createdAt: entry.createdAt,
+      conversationId: typeof entry.conversationId === 'string' && entry.conversationId ? entry.conversationId : entry.discussionId
     }
   }
 
@@ -130,6 +176,7 @@ export class DiscussionService {
     const rawParticipants = Array.isArray(input.participants) ? input.participants.filter((p) => ['karl', 'astra', 'nova'].includes(String(p))) : ['astra', 'nova']
     const participants = rawParticipants as DiscussionTurn[]
     if (!participants.length) return { ok: false, reason: 'At least one participant is required' }
+    const isThreeWay = input.isThreeWay === true
 
     const now = new Date().toISOString()
     const discussion: Discussion = {
@@ -142,7 +189,8 @@ export class DiscussionService {
       participants,
       createdAt: now,
       updatedAt: now,
-      completedAt: null
+      completedAt: null,
+      isThreeWay
     }
     this.discussions.push(discussion)
     if (this.discussions.length > MAX_DISCUSSIONS) this.discussions = this.discussions.slice(-MAX_DISCUSSIONS)
@@ -157,11 +205,8 @@ export class DiscussionService {
     if (active.state === 'paused') return { ok: false, reason: 'Discussion is paused' }
 
     const nextTurnNumber = active.turnCount + 1
-    const participantIndex = (nextTurnNumber - 1) % active.participants.length
-    const speaker = active.participants[participantIndex]
-    const recipient = active.participants.length === 2 && active.participants.includes('astra') && active.participants.includes('nova')
-      ? (speaker === 'astra' ? 'nova' : 'astra')
-      : 'both'
+    const speaker = speakerFor(active, nextTurnNumber)
+    const recipient = recipientFor(active, nextTurnNumber)
 
     const turn: DiscussionTurnRecord = {
       id: randomUUID(),
@@ -170,7 +215,8 @@ export class DiscussionService {
       speaker,
       recipient,
       messageId: null,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      conversationId: active.id
     }
     this.turns.push(turn)
     active.turnCount = nextTurnNumber
@@ -230,6 +276,95 @@ export class DiscussionService {
     try { this.persist() } catch {}
     this.publish(discussion, this.turns.filter((t) => t.discussionId === discussionId))
     return { ok: true }
+  }
+
+  /**
+   * Advances the discussion to the next turn after a response has been recorded.
+   * This is called automatically when Astra or Nova completes their response.
+   * Returns the next turn info if the discussion continues, or null if completed.
+   */
+  advanceTurnAfterResponse(discussionId: string): { ok: true; discussion: Discussion; nextTurn: DiscussionTurnRecord | null; completed: boolean } | { ok: false; reason: string } {
+    const discussion = this.discussions.find((d) => d.id === discussionId)
+    if (!discussion) return { ok: false, reason: 'Discussion not found' }
+    if (discussion.state === 'completed' || discussion.state === 'idle' || discussion.state === 'error') {
+      return { ok: false, reason: 'Discussion is not active' }
+    }
+    if (discussion.state === 'paused') return { ok: false, reason: 'Discussion is paused' }
+
+    // Verify the current turn has a message recorded
+    const currentTurn = this.turns.find((t) => t.discussionId === discussionId && t.turn === discussion.turnCount)
+    if (!currentTurn || !currentTurn.messageId) {
+      return { ok: false, reason: 'Current turn has no recorded response yet' }
+    }
+
+    // Check if we've reached max turns
+    if (discussion.turnCount >= discussion.maxTurns) {
+      discussion.state = 'completed'
+      discussion.completedAt = new Date().toISOString()
+      discussion.updatedAt = discussion.completedAt
+      try { this.persist() } catch {}
+      this.publish(discussion, this.turns.filter((t) => t.discussionId === discussionId))
+      return { ok: true, discussion: { ...discussion }, nextTurn: null, completed: true }
+    }
+
+    // Advance to next turn
+    const nextTurnNumber = discussion.turnCount + 1
+    const speaker = speakerFor(discussion, nextTurnNumber)
+    const recipient = recipientFor(discussion, nextTurnNumber)
+
+    const nextTurn: DiscussionTurnRecord = {
+      id: randomUUID(),
+      discussionId: discussion.id,
+      turn: nextTurnNumber,
+      speaker,
+      recipient,
+      messageId: null,
+      createdAt: new Date().toISOString(),
+      conversationId: discussion.id
+    }
+    this.turns.push(nextTurn)
+    discussion.turnCount = nextTurnNumber
+    discussion.currentTurn = speaker
+    discussion.state = speaker === 'astra' ? 'awaiting-astra' : speaker === 'nova' ? 'awaiting-nova' : 'awaiting-karl'
+    discussion.updatedAt = nextTurn.createdAt
+
+    // Check if this new turn completes the discussion
+    let completed = false
+    if (discussion.turnCount >= discussion.maxTurns) {
+      discussion.state = 'completed'
+      discussion.completedAt = new Date().toISOString()
+      discussion.updatedAt = discussion.completedAt
+      completed = true
+    }
+
+    try { this.persist() } catch {}
+    this.publish(discussion, this.turns.filter((t) => t.discussionId === discussionId))
+    return { ok: true, discussion: { ...discussion }, nextTurn, completed }
+  }
+
+  /**
+   * Gets the conversation history for a discussion, formatted for an agent.
+   * Returns messages in chronological order with sender labels.
+   */
+  getConversationHistory(discussionId: string, conversationService: { snapshot: () => { id: string; sender: string; text: string; createdAt: string }[] }): { turn: number; speaker: DiscussionTurn; text: string; messageId: string }[] {
+    const turns = this.turns.filter((t) => t.discussionId === discussionId).sort((a, b) => a.turn - b.turn)
+    const messages = conversationService.snapshot()
+    const history: { turn: number; speaker: DiscussionTurn; text: string; messageId: string }[] = []
+    
+    for (const turn of turns) {
+      if (turn.messageId) {
+        const message = messages.find((m) => m.id === turn.messageId)
+        if (message) {
+          history.push({
+            turn: turn.turn,
+            speaker: turn.speaker,
+            text: message.text,
+            messageId: turn.messageId
+          })
+        }
+      }
+    }
+    return history
   }
 
   getActive(): Discussion | null {

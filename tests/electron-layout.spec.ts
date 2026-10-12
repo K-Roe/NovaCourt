@@ -21,7 +21,7 @@ test('M2 offline fixture preserves Electron layout, bounds, resize and navigatio
     await expect(page.getByRole('heading', { name: 'Astra' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Nova', exact: true })).toBeVisible()
     await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getNovaState())).connection).toBe('error')
-    await expect(page.getByText('Nova is not connected.')).toBeVisible()
+    await expect(page.getByText('Nova chat service is not connected.')).toBeVisible()
     await expect.poll(async () => (await page.evaluate(() => window.novaCourt.readAstraStatus())).phase).toBe('open')
     expect((await page.evaluate(() => window.novaCourt.readAstraStatus())).source).toBe('fixture')
     await expect.poll(async () => (await page.evaluate(() => window.novaCourt.testViewBounds())).attached).toBe(true)
@@ -45,9 +45,12 @@ test('M2 offline fixture preserves Electron layout, bounds, resize and navigatio
       execFileSync('powershell', ['-NoProfile', '-File', resolve(cwd, 'tests', 'capture-window.ps1'), resolve(cwd, 'test-results', 'm2-offline-fixture-window.png'), String(bounds.x), String(bounds.y), String(bounds.width), String(bounds.height)])
     }
 
-    await page.getByRole('textbox', { name: 'Write a local note' }).fill('A real local note from Karl.')
-    await page.getByRole('button', { name: 'Save local note' }).click()
-    await expect(page.getByText('A real local note from Karl.')).toBeVisible()
+    // The shared conversation must render the unified-chat composer in Karl's seat. Resizing the panel
+    // around live content is the thing worth exercising, so real recorded content is put there first
+    // rather than the removed local-note control.
+    await page.evaluate(() => window.novaCourt.appendCourtMessage({ sender: 'karl', recipient: 'court', text: 'A real message from Karl.', source: 'manual' }))
+    await page.getByRole('button', { name: 'Expand the shared conversation' }).click()
+    await expect(page.getByTestId('court-message')).toContainText('A real message from Karl.')
 
     const before = await page.getByTestId('astra-viewport').boundingBox()
     const divider = page.getByRole('separator', { name: 'Resize Karl and Astra panels' })

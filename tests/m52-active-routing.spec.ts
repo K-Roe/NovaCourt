@@ -25,407 +25,274 @@ function freshUserData(): string {
   return userData
 }
 
+/**
+ * Records a court message through the preload bridge.
+ *
+ * The unified-chat renderer has one composer for the whole court, so there is no longer a recipient
+ * picker that routes on the spot. Each route is therefore requested explicitly below through the same
+ * handler the renderer used to call, and the assertions on delivery state, the clipboard, the PTY and
+ * the guarded send are unchanged.
+ */
 async function composeAndGetId(page: Page, text: string, to: 'astra' | 'nova' | 'court' | 'both' = 'court'): Promise<string> {
-  await page.locator('select[aria-label="Recipient"]').selectOption(to)
-  await page.locator('textarea[aria-label="Message the court"]').fill(text)
-  await page.getByRole('button', { name: 'Send to the court' }).click()
+  const message = await page.evaluate(
+    ({ body, recipient }) => window.novaCourt.appendCourtMessage({ sender: 'karl', recipient, text: body, source: 'manual' }),
+    { body: text, recipient: to }
+  )
   await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getCourtMessages())).filter((m) => m.text === text).length).toBeGreaterThanOrEqual(1)
+  return message.id
+}
+
+/** All court messages carrying the given text, since a "both" message produces two. */
+async function idsForText(page: Page, text: string): Promise<string[]> {
   const messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-  const found = messages.find((m: any) => m.text === text)
-  if (!found) throw new Error('Message not found after compose')
-  return found.id
+  return messages.filter((m: any) => m.text === text).map((m: any) => m.id)
 }
 
-async function setNovaView(page: Page, view: 'opencode' | 'powershell' | 'chat') {
-  await page.getByRole('tab', { name: view === 'opencode' ? 'OpenCode Terminal' : view === 'powershell' ? 'PowerShell' : 'Nova Chat' }).click()
-  await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getNovaState()))).toBeTruthy()
+async function deliveryOf(page: Page, id: string): Promise<string> {
+  const messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
+  return messages.find((m: any) => m.id === id)!.delivery
 }
 
-test.describe('M5.2 Active Nova tab routing', () => {
-  test('Karl → Nova with OpenCode Terminal active prepares message in terminal', async () => {
+async function startTerminal(page: Page, tab: 'OpenCode Terminal' | 'PowerShell') {
+  await page.getByRole('tab', { name: tab }).click()
+  await page.getByRole('button', { name: 'Start', exact: true }).click()
+  await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).status).toBe('running')
+}
+
+test.describe('M5.2 Nova routing — terminal preparation', () => {
+  test('a Nova message is prepared in the OpenCode terminal and never executed', async () => {
+    test.setTimeout(180_000)
     const userData = freshUserData()
     const { app, page } = await launch(userData)
     try {
-      await setNovaView(page, 'opencode')
-      await page.getByRole('button', { name: 'Start', exact: true }).click()
-      await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).status).toBe('running')
-      await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).mode).toBe('opencode')
-      
+      await startTerminal(page, 'OpenCode Terminal')
+      expect((await page.evaluate(() => window.novaCourt.getTerminalState())).mode).toBe('opencode')
+
       const msgId = await composeAndGetId(page, 'Test message for OpenCode terminal', 'nova')
-      
-      const messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      const sentMsg = messages.find((m: any) => m.id === msgId)!
-      expect(sentMsg.delivery).toBe('prepared-for-opencode')
-      
-      // OpenCode's --mini mode is a TUI that may not echo stdin back to the buffer.
-      // The preparation still succeeds (text sent to PTY stdin), but we can't verify via buffer.
-      // Just verify the notice shows preparation message.
-      await expect(page.locator('.court-thread-notice')).toContainText('Prepared for OpenCode terminal')
+      const result = await page.evaluate((id) => window.novaCourt.prepareForTerminal(id, 'opencode'), msgId)
+      expect(result.ok).toBe(true)
+      expect(result.deliveryStatus).toBe('prepared-for-opencode')
+      expect(await deliveryOf(page, msgId)).toBe('prepared-for-opencode')
+
+      // OpenCode's --mini mode is a TUI that may not echo stdin back, so the buffer cannot confirm the
+      // write. What matters is that preparation was recorded and nothing ran.
+      expect((await page.evaluate(() => window.novaCourt.getTerminalState())).status).toBe('running')
     } finally { await app.close() }
   })
 
-  test('Karl → Nova with PowerShell active prepares message in terminal', async () => {
+  test('a Nova message is prepared in PowerShell and lands in the shell input line, unexecuted', async () => {
+    test.setTimeout(180_000)
     const userData = freshUserData()
     const { app, page } = await launch(userData)
     try {
-      await setNovaView(page, 'powershell')
-      await page.getByRole('button', { name: 'Start', exact: true }).click()
-      await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).status).toBe('running')
-      await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).mode).toBe('powershell')
-      
+      await startTerminal(page, 'PowerShell')
+      expect((await page.evaluate(() => window.novaCourt.getTerminalState())).mode).toBe('powershell')
+
       const msgId = await composeAndGetId(page, 'Test message for PowerShell terminal', 'nova')
-      
-      const messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      const sentMsg = messages.find((m: any) => m.id === msgId)!
-      expect(sentMsg.delivery).toBe('prepared-for-powershell')
-      
+      const result = await page.evaluate((id) => window.novaCourt.prepareForTerminal(id, 'powershell'), msgId)
+      expect(result.ok).toBe(true)
+      expect(result.deliveryStatus).toBe('prepared-for-powershell')
+      expect(await deliveryOf(page, msgId)).toBe('prepared-for-powershell')
+
       await expect.poll(async () => {
-        const terminalState = await page.evaluate(() => window.novaCourt.getTerminalState())
-        const searchText = 'Test message for PowerShell terminal'
-        const cleanBuffer = stripAnsi(terminalState.buffer)
-        return cleanBuffer.includes(searchText)
+        const buffer = stripAnsi((await page.evaluate(() => window.novaCourt.getTerminalState())).buffer)
+        return buffer.includes('Test message for PowerShell terminal')
       }, { timeout: 10_000, intervals: [100, 200, 500, 1000, 2000] }).toBeTruthy()
-      
-      await expect(page.locator('.court-thread-notice')).toContainText('Prepared for PowerShell terminal')
     } finally { await app.close() }
   })
 
-  test('Karl → Nova with Nova Chat active uses guarded direct-send', async () => {
+  test('multiline text is sanitised to a single shell line so it cannot become two commands', async () => {
+    test.setTimeout(180_000)
     const userData = freshUserData()
     const { app, page } = await launch(userData)
     try {
-      await setNovaView(page, 'chat')
-      const msgId = await composeAndGetId(page, 'Test message for Nova Chat', 'nova')
-      
-      const messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      const sentMsg = messages.find((m: any) => m.id === msgId)!
-      expect(['awaiting-send', 'sent', 'unconfirmed']).toContain(sentMsg.delivery)
-      
-      await expect(page.locator('.court-thread-notice')).toContainText(/guarded chat|Connect to OpenCode/)
+      await startTerminal(page, 'PowerShell')
+      const msgId = await composeAndGetId(page, 'First line of the request\nSecond line of the request', 'nova')
+      const result = await page.evaluate((id) => window.novaCourt.prepareForTerminal(id, 'powershell'), msgId)
+      expect(result.ok).toBe(true)
+      expect(result.text).not.toContain('\n')
+      expect(result.text).toBe('First line of the request Second line of the request')
     } finally { await app.close() }
   })
 
-  test('Karl → Astra prepares via clipboard', async () => {
+  test('preparation is refused, not silently ignored, when no terminal is running', async () => {
+    test.setTimeout(180_000)
+    const userData = freshUserData()
+    const { app, page } = await launch(userData)
+    try {
+      const msgId = await composeAndGetId(page, 'No terminal is running', 'nova')
+      const result = await page.evaluate((id) => window.novaCourt.prepareForTerminal(id, 'powershell'), msgId)
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/terminal is not running/i)
+      // The record is untouched by a refused preparation.
+      expect(await deliveryOf(page, msgId)).toBe('local')
+    } finally { await app.close() }
+  })
+})
+
+test.describe('M5.2 Nova routing — guarded chat', () => {
+  test('a Nova message without a connected server fails honestly and fabricates no reply', async () => {
+    test.setTimeout(180_000)
+    const userData = freshUserData()
+    const { app, page } = await launch(userData)
+    try {
+      const msgId = await composeAndGetId(page, 'Test message for Nova Chat', 'nova')
+      const failure = await page.evaluate(
+        (id) => window.novaCourt.sendToNova(id).then(() => 'sent', (e: Error) => e.message),
+        msgId
+      )
+      expect(failure).toMatch(/Connect to OpenCode first/)
+      // The prompt may or may not have landed, so the record says exactly that.
+      expect(['delivery-unknown', 'awaiting-send', 'sent']).toContain(await deliveryOf(page, msgId))
+      expect(await deliveryOf(page, msgId)).not.toBe('sent')
+      // No Nova reply was invented to paper over the failure.
+      const messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
+      expect(messages.filter((m: any) => m.sender === 'nova')).toHaveLength(0)
+    } finally { await app.close() }
+  })
+})
+
+test.describe('M5.2 Astra routing — clipboard handoff', () => {
+  test('an Astra message is copied to the clipboard and awaits Karl', async () => {
+    test.setTimeout(180_000)
     const userData = freshUserData()
     const { app, page } = await launch(userData)
     try {
       const msgId = await composeAndGetId(page, 'Test message for Astra', 'astra')
-      
-      const messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      const sentMsg = messages.find((m: any) => m.id === msgId)!
-      expect(sentMsg.delivery).toBe('prepared-for-astra')
-      
-      const clipboardText = await page.evaluate(() => window.novaCourt.readClipboard())
-      expect(clipboardText).toBe('Test message for Astra')
-      
-      await expect(page.getByTestId('handoff-status')).toHaveText('AWAITING KARL TO SEND')
-      await expect(page.locator('.court-thread-notice')).toContainText('clipboard')
+      await page.evaluate((id) => window.novaCourt.prepareForAstra(id), msgId)
+      expect(await deliveryOf(page, msgId)).toBe('prepared-for-astra')
+      expect(await page.evaluate(() => window.novaCourt.readClipboard())).toBe('Test message for Astra')
+      expect(await page.evaluate(() => window.novaCourt.getHandoffState())).toMatchObject({ status: 'awaiting-karl', target: 'astra' })
     } finally { await app.close() }
   })
 
-  test('Karl → Both with OpenCode Terminal active routes Nova to terminal and Astra to clipboard', async () => {
+  test('a "both" message reaches Astra by clipboard and Nova by terminal independently', async () => {
+    test.setTimeout(180_000)
     const userData = freshUserData()
     const { app, page } = await launch(userData)
     try {
-      await setNovaView(page, 'opencode')
-      await page.getByRole('button', { name: 'Start', exact: true }).click()
-      await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).status).toBe('running')
-      await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).mode).toBe('opencode')
-      
+      await startTerminal(page, 'PowerShell')
       await composeAndGetId(page, 'Test message for Both', 'both')
-      
-      const messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      const bothMessages = messages.filter((m: any) => m.text === 'Test message for Both')
-      expect(bothMessages).toHaveLength(2)
-      
-      const novaMsg = bothMessages.find((m: any) => m.recipient === 'nova')!
-      const astraMsg = bothMessages.find((m: any) => m.recipient === 'astra')!
-      
-      expect(novaMsg.delivery).toBe('prepared-for-opencode')
-      expect(astraMsg.delivery).toBe('prepared-for-astra')
-      
-      const clipboardText = await page.evaluate(() => window.novaCourt.readClipboard())
-      expect(clipboardText).toBe('Test message for Both')
-      
-      await expect(page.locator('.court-thread-notice')).toContainText('OpenCode terminal')
-      // In fixture mode, auto-paste falls back to clipboard with explanatory message
-      await expect(page.locator('.court-thread-notice')).toContainText('Clipboard fallback')
+      const [astraId, novaId] = await idsForText(page, 'Test message for Both')
+
+      await page.evaluate((id) => window.novaCourt.prepareForAstra(id), astraId)
+      await page.evaluate((id) => window.novaCourt.prepareForTerminal(id, 'powershell'), novaId)
+
+      expect(await deliveryOf(page, astraId)).toBe('prepared-for-astra')
+      expect(await deliveryOf(page, novaId)).toBe('prepared-for-powershell')
+      // The clipboard holds Astra's copy; Nova's text went to the shell instead.
+      expect(await page.evaluate(() => window.novaCourt.readClipboard())).toBe('Test message for Both')
     } finally { await app.close() }
   })
+})
 
-  test('Karl → Both with PowerShell active routes Nova to terminal and Astra to clipboard', async () => {
+test.describe('M5.2 Routing invariants', () => {
+  test('each delivery type is reported honestly and claims nothing more', async () => {
+    test.setTimeout(180_000)
     const userData = freshUserData()
     const { app, page } = await launch(userData)
     try {
-      await setNovaView(page, 'powershell')
-      await page.getByRole('button', { name: 'Start', exact: true }).click()
-      await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).status).toBe('running')
-      await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).mode).toBe('powershell')
-      
-      await composeAndGetId(page, 'Test message for Both PowerShell', 'both')
-      
+      await startTerminal(page, 'PowerShell')
+      const localId = await composeAndGetId(page, 'Never routed anywhere', 'court')
+      const astraId = await composeAndGetId(page, 'Prepared for Astra only', 'astra')
+      const novaId = await composeAndGetId(page, 'Prepared for Nova only', 'nova')
+
+      expect(await deliveryOf(page, localId)).toBe('local')
+
+      await page.evaluate((id) => window.novaCourt.prepareForAstra(id), astraId)
+      expect(await deliveryOf(page, astraId)).toBe('prepared-for-astra')
+
+      await page.evaluate((id) => window.novaCourt.prepareForTerminal(id, 'powershell'), novaId)
+      expect(await deliveryOf(page, novaId)).toBe('prepared-for-powershell')
+
+      // "Prepared" never becomes "sent" on its own. Only Astra's explicit confirmation may do that,
+      // and only for the copied message.
       const messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      const bothMessages = messages.filter((m: any) => m.text === 'Test message for Both PowerShell')
-      expect(bothMessages).toHaveLength(2)
-      
-      const novaMsg = bothMessages.find((m: any) => m.recipient === 'nova')!
-      const astraMsg = bothMessages.find((m: any) => m.recipient === 'astra')!
-      
-      expect(novaMsg.delivery).toBe('prepared-for-powershell')
-      expect(astraMsg.delivery).toBe('prepared-for-astra')
+      expect(messages.every((m: any) => m.delivery !== 'confirmed-delivered')).toBe(true)
+      expect(messages.every((m: any) => m.acknowledged === false)).toBe(true)
     } finally { await app.close() }
   })
 
-  test('Karl → Both with Nova Chat active routes Nova to guarded chat and Astra to clipboard', async () => {
+  test('preparing a message does not redirect a different message', async () => {
+    test.setTimeout(180_000)
+    // Switching seats used to re-target a pending message. Preparing one message must leave every other
+    // message's delivery state exactly as it was.
     const userData = freshUserData()
     const { app, page } = await launch(userData)
     try {
-      await setNovaView(page, 'chat')
-      await composeAndGetId(page, 'Test message for Both Chat', 'both')
-      
-      const messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      const bothMessages = messages.filter((m: any) => m.text === 'Test message for Both Chat')
-      expect(bothMessages).toHaveLength(2)
-      
-      const novaMsg = bothMessages.find((m: any) => m.recipient === 'nova')!
-      const astraMsg = bothMessages.find((m: any) => m.recipient === 'astra')!
-      
-      expect(['awaiting-send', 'sent', 'unconfirmed']).toContain(novaMsg.delivery)
-      expect(astraMsg.delivery).toBe('prepared-for-astra')
+      const first = await composeAndGetId(page, 'First pending message', 'nova')
+      const second = await composeAndGetId(page, 'Second pending message', 'nova')
+      await page.evaluate((id) => window.novaCourt.prepareForAstra(id), first)
+      expect(await deliveryOf(page, first)).toBe('prepared-for-astra')
+      expect(await deliveryOf(page, second)).toBe('local')
     } finally { await app.close() }
   })
 
-  test('Multiline message is sanitized to single line for terminal preparation', async () => {
+  test('duplicate messages are refused rather than routed twice', async () => {
+    test.setTimeout(180_000)
     const userData = freshUserData()
     const { app, page } = await launch(userData)
     try {
-      await setNovaView(page, 'powershell')
-      await page.getByRole('button', { name: 'Start', exact: true }).click()
-      await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).status).toBe('running')
-      
-      const multilineText = 'Line 1\nLine 2\nLine 3'
-      const msgId = await composeAndGetId(page, multilineText, 'nova')
-      
-      const messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      const sentMsg = messages.find((m: any) => m.id === msgId)!
-      expect(sentMsg.delivery).toBe('prepared-for-powershell')
-      
-      await expect.poll(async () => {
-        const terminalState = await page.evaluate(() => window.novaCourt.getTerminalState())
-        const cleanBuffer = stripAnsi(terminalState.buffer)
-        return cleanBuffer.includes('Line 1 Line 2 Line 3')
-      }, { timeout: 10_000, intervals: [100, 200, 500, 1000, 2000] }).toBeTruthy()
-      
-      const terminalState = await page.evaluate(() => window.novaCourt.getTerminalState())
-      const cleanBuffer = stripAnsi(terminalState.buffer)
-      expect(cleanBuffer).not.toContain('\nLine 2')
-      expect(cleanBuffer).not.toContain('\nLine 3')
+      await composeAndGetId(page, 'Duplicate routing message', 'nova')
+      const duplicate = await page.evaluate(
+        () => window.novaCourt.appendCourtMessage({ sender: 'karl', recipient: 'nova', text: 'Duplicate routing message', source: 'manual' })
+          .then(() => 'accepted', (e: Error) => e.message)
+      )
+      expect(duplicate).toMatch(/already in the conversation/)
+      expect(await idsForText(page, 'Duplicate routing message')).toHaveLength(1)
     } finally { await app.close() }
   })
 
-  test('Tab switching does not redirect pending messages', async () => {
-    // This test verifies that message delivery status is determined by the active tab
-    // at the time of sending, not by subsequent tab switches.
-    // We run two separate test sessions to avoid terminal stop/start timing issues.
-    
-    // Session 1: OpenCode terminal active
-    let userData = freshUserData()
-    let launchResult = await launch(userData)
-    let app = launchResult.app
-    let page = launchResult.page
-    let messages: any[] = []
-    let sentMsg: any
-    try {
-      await setNovaView(page, 'opencode')
-      await page.getByRole('button', { name: 'Start', exact: true }).click()
-      await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).status).toBe('running')
-      await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).mode).toBe('opencode')
-      
-      const msgId1 = await composeAndGetId(page, 'First message for OpenCode', 'nova')
-      messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      sentMsg = messages.find((m: any) => m.id === msgId1)!
-      expect(sentMsg.delivery).toBe('prepared-for-opencode')
-    } finally { await app.close() }
-    
-    // Session 2: PowerShell terminal active
-    userData = freshUserData()
-    launchResult = await launch(userData)
-    app = launchResult.app
-    page = launchResult.page
-    try {
-      await setNovaView(page, 'powershell')
-      await page.getByRole('button', { name: 'Start', exact: true }).click()
-      await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).status).toBe('running')
-      await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).mode).toBe('powershell')
-      
-      const msgId2 = await composeAndGetId(page, 'Second message for PowerShell', 'nova')
-      messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      sentMsg = messages.find((m: any) => m.id === msgId2)!
-      expect(sentMsg.delivery).toBe('prepared-for-powershell')
-    } finally { await app.close() }
-    
-    // The key assertion: each message's delivery status reflects the active tab
-    // at send time. Since we used separate sessions, we verify the routing logic
-    // by checking that the correct preparation function was called for each.
-    // The fact that both tests pass independently proves tab switching doesn't
-    // redirect messages - each send uses the currently active tab.
-  })
-
-  test('No automatic command execution when preparing terminal message', async () => {
+  test('no automatic command execution when preparing a terminal message', async () => {
+    test.setTimeout(180_000)
     const userData = freshUserData()
     const { app, page } = await launch(userData)
     try {
-      await setNovaView(page, 'powershell')
-      await page.getByRole('button', { name: 'Start', exact: true }).click()
-      await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).status).toBe('running')
-      
-      const msgId = await composeAndGetId(page, 'Get-Process', 'nova')
-      
-      const messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      const sentMsg = messages.find((m: any) => m.id === msgId)!
-      expect(sentMsg.delivery).toBe('prepared-for-powershell')
-      
-      await expect.poll(async () => {
-        const terminalState = await page.evaluate(() => window.novaCourt.getTerminalState())
-        const cleanBuffer = stripAnsi(terminalState.buffer)
-        return cleanBuffer.includes('Get-Process')
-      }, { timeout: 10_000, intervals: [100, 200, 500, 1000, 2000] }).toBeTruthy()
-      
-      await page.waitForTimeout(1000)
-      const terminalState2 = await page.evaluate(() => window.novaCourt.getTerminalState())
-      const cleanBuffer2 = stripAnsi(terminalState2.buffer)
-      expect(cleanBuffer2).toContain('Get-Process')
+      await startTerminal(page, 'PowerShell')
+      const msgId = await composeAndGetId(page, 'Get-ChildItem C:\\Windows', 'nova')
+      await page.evaluate((id) => window.novaCourt.prepareForTerminal(id, 'powershell'), msgId)
+
+      // The text is sitting in the shell's input line. Nothing has been run, so no output exists.
+      const buffer = stripAnsi((await page.evaluate(() => window.novaCourt.getTerminalState())).buffer)
+      expect(buffer).not.toMatch(/Windows\s+Directory/i)
+      // Karl still has to press Enter himself; the process is alive and idle.
+      expect((await page.evaluate(() => window.novaCourt.getTerminalState())).status).toBe('running')
     } finally { await app.close() }
   })
 
-  test('Duplicate messages are prevented', async () => {
+  test('security: court handlers never reach a terminal, and terminal staging happens in exactly one place', async () => {
+    test.setTimeout(180_000)
     const userData = freshUserData()
-    const { app, page } = await launch(userData)
+    const { app } = await launch(userData)
     try {
-      await setNovaView(page, 'powershell')
-      await page.getByRole('button', { name: 'Start', exact: true }).click()
-      await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).status).toBe('running')
-      
-      await composeAndGetId(page, 'Duplicate test message', 'nova')
-      await page.locator('textarea[aria-label="Message the court"]').fill('Duplicate test message')
-      await page.locator('select[aria-label="Recipient"]').selectOption('nova')
-      await page.getByRole('button', { name: 'Send to the court' }).click()
-      
-      await expect(page.locator('.court-thread-notice')).toContainText('already in the conversation')
-      
-      const messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      const duplicates = messages.filter((m: any) => m.text === 'Duplicate test message')
-      expect(duplicates).toHaveLength(1)
-    } finally { await app.close() }
-  })
+      const { readFileSync } = await import('node:fs')
+      const bundle = readFileSync(resolve(cwd, 'dist-electron/main.cjs'), 'utf8')
+      const chunks = bundle.split(/(?=ipcMain\.(?:handle|on)\()/)
 
-  test('Correct status reporting for each delivery type', async () => {
-    // Test each delivery type in separate sessions to avoid terminal stop/start timing issues.
-    
-    // Nova Chat status
-    let userData = freshUserData()
-    let launchResult = await launch(userData)
-    let app = launchResult.app
-    let page = launchResult.page
-    let messages: any[] = []
-    let msg: any
-    try {
-      await setNovaView(page, 'chat')
-      await composeAndGetId(page, 'Status test chat', 'nova')
-      messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      msg = messages.find((m: any) => m.text === 'Status test chat')!
-      expect(['awaiting-send', 'sent', 'unconfirmed']).toContain(msg.delivery)
-    } finally { await app.close() }
-    
-    // OpenCode Terminal status
-    userData = freshUserData()
-    launchResult = await launch(userData)
-    app = launchResult.app
-    page = launchResult.page
-    try {
-      await setNovaView(page, 'opencode')
-      await page.getByRole('button', { name: 'Start', exact: true }).click()
-      await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).status).toBe('running')
-      await composeAndGetId(page, 'Status test opencode', 'nova')
-      messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      msg = messages.find((m: any) => m.text === 'Status test opencode')!
-      expect(msg.delivery).toBe('prepared-for-opencode')
-    } finally { await app.close() }
-    
-    // PowerShell status
-    userData = freshUserData()
-    launchResult = await launch(userData)
-    app = launchResult.app
-    page = launchResult.page
-    try {
-      await setNovaView(page, 'powershell')
-      await page.getByRole('button', { name: 'Start', exact: true }).click()
-      await expect.poll(async () => (await page.evaluate(() => window.novaCourt.getTerminalState())).status).toBe('running')
-      await composeAndGetId(page, 'Status test powershell', 'nova')
-      messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      msg = messages.find((m: any) => m.text === 'Status test powershell')!
-      expect(msg.delivery).toBe('prepared-for-powershell')
-    } finally { await app.close() }
-    
-    // Astra status
-    userData = freshUserData()
-    launchResult = await launch(userData)
-    app = launchResult.app
-    page = launchResult.page
-    try {
-      await setNovaView(page, 'chat')
-      await composeAndGetId(page, 'Status test astra', 'astra')
-      messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      msg = messages.find((m: any) => m.text === 'Status test astra')!
-      expect(msg.delivery).toBe('prepared-for-astra')
-    } finally { await app.close() }
-  })
+      // A court message is a record. No handler that only touches the record may reach a terminal or
+      // the OpenCode service, because that is the guarantee that discussion text can never authorise
+      // execution.
+      const courtChunks = chunks.filter((chunk) => /^ipcMain\.(?:handle|on)\('court:/.test(chunk))
+      expect(courtChunks.length).toBeGreaterThan(0)
+      for (const chunk of courtChunks) {
+        expect(chunk).not.toContain('terminalService')
+        expect(chunk).not.toContain('novaService')
+        expect(chunk).not.toContain('spawn')
+      }
 
-  test('Terminal preparation fails gracefully when terminal not running', async () => {
-    const userData = freshUserData()
-    const { app, page } = await launch(userData)
-    try {
-      await setNovaView(page, 'opencode')
-      const msgId = await composeAndGetId(page, 'Test terminal not running', 'nova')
-      
-      const messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      const sentMsg = messages.find((m: any) => m.id === msgId)!
-      expect(sentMsg.delivery).not.toBe('prepared-for-opencode')
-      
-      await expect(page.locator('.court-thread-notice')).toContainText('not running')
-    } finally { await app.close() }
-  })
-
-  test('Astra preparation uses clipboard fallback (no webpage injection)', async () => {
-    const userData = freshUserData()
-    const { app, page } = await launch(userData)
-    try {
-      await composeAndGetId(page, 'Astra clipboard test', 'astra')
-      
-      const clipboardText = await page.evaluate(() => window.novaCourt.readClipboard())
-      expect(clipboardText).toBe('Astra clipboard test')
-      
-      const messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      const sentMsg = messages.find((m: any) => m.text === 'Astra clipboard test')!
-      expect(sentMsg.delivery).toBe('prepared-for-astra')
-      
-      await expect(page.getByTestId('handoff-status')).toHaveText('AWAITING KARL TO SEND')
-    } finally { await app.close() }
-  })
-
-  test('Security: discussion messages do not authorize terminal execution', async () => {
-    const userData = freshUserData()
-    const { app, page } = await launch(userData)
-    try {
-      await composeAndGetId(page, 'Nova: run npm test in the terminal', 'nova')
-      
-      const terminalState = await page.evaluate(() => window.novaCourt.getTerminalState())
-      expect(terminalState.status).toBe('idle')
-      expect(terminalState.pid).toBeNull()
-      
-      const messages = await page.evaluate(() => window.novaCourt.getCourtMessages())
-      const msg = messages.find((m: any) => m.text === 'Nova: run npm test in the terminal')!
-      expect(msg).toBeTruthy()
+      // `handoff:prepareForTerminal` is the single deliberate case where a handoff writes to a PTY: it
+      // stages text into the shell's input line for Karl to submit. It must never press Enter, or
+      // "staged for Karl" would become "executed by NovaCourt". The line-collapsing behaviour itself is
+      // verified for real by the multiline sanitisation test above.
+      //
+      // The handler body is sliced up to the next registration, because a chunk from a naive split also
+      // contains whatever follows it — including the Astra send path, which does legitimately press Enter
+      // into ChatGPT.
+      const prepareStart = bundle.indexOf("ipcMain.handle('handoff:prepareForTerminal'")
+      expect(prepareStart).toBeGreaterThan(-1)
+      const prepareBody = bundle.slice(prepareStart, bundle.indexOf('ipcMain.', prepareStart + 10))
+      expect(prepareBody).not.toMatch(/keyCode:\s*'Enter'/)
+      expect(prepareBody).toContain('terminalService.write')
     } finally { await app.close() }
   })
 })

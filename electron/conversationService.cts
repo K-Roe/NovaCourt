@@ -25,7 +25,7 @@ export type CourtMessage = {
   recipient: CourtParticipant | 'court'
   text: string
   source: MessageSource
-  delivery: 'local' | 'awaiting-send' | 'sent' | 'unconfirmed' | 'prepared-for-astra' | 'prepared-for-opencode' | 'prepared-for-powershell' | 'awaiting-karl-submission' | 'confirmed-delivered' | 'failed'
+  delivery: 'local' | 'awaiting-send' | 'sent' | 'unconfirmed' | 'delivery-unknown' | 'prepared-for-astra' | 'prepared-for-opencode' | 'prepared-for-powershell' | 'awaiting-karl-submission' | 'confirmed-delivered' | 'failed'
   /**
    * Set only by Karl, and only for a message he copied out to ChatGPT and then sent himself.
    * NovaCourt never sets it, because NovaCourt never sends anything into ChatGPT. A copied message
@@ -39,6 +39,15 @@ export type CourtMessage = {
    * filling with copies of one answer as the service re-publishes its state.
    */
   externalId: string | null
+  /**
+   * The unified turn this message belongs to, when it was produced by a three-way conversation.
+   *
+   * This exists because the previous implementation located Astra's answer by asking which Astra
+   * messages were newer than Karl's — "the first match" — which picked the wrong answer whenever the
+   * thread held more than one ruling. Correlation is by identity instead: the turn records which court
+   * message holds each seat's response, so there is nothing to guess and no timestamp to trust.
+   */
+  turnId: string | null
   createdAt: string
   /** Set when this message was produced by forwarding another; the original is never modified. */
   forwardedFrom: string | null
@@ -53,6 +62,7 @@ export type ConversationInput = {
   forwardedFrom?: unknown
   delivery?: unknown
   externalId?: unknown
+  turnId?: unknown
 }
 
 export type AppendResult = { ok: true; message: CourtMessage } | { ok: false; reason: string; duplicate: boolean; existingId: string | null }
@@ -62,6 +72,32 @@ const MAX_MESSAGES = 2000
 const RECIPIENTS = ['karl', 'astra', 'nova', 'court', 'both']
 const SENDERS = ['karl', 'astra', 'nova']
 const AGENT_RECIPIENTS = ['astra', 'nova'] as const satisfies CourtMessage['recipient'][]
+/**
+ * Every delivery state a message may hold, in one place.
+ *
+ * This list was previously written out three times — once in `accept`, once in `markDelivery`, and
+ * once as the literal union on the type — and the copies had already drifted. A new state added to the
+ * type but not to a validation list is rejected on save and lost on load, which is a silent failure
+ * that only shows up as a message mysteriously reverting to `local` after a restart.
+ *
+ * `delivery-unknown` is the state that records "we could not verify whether this was received". It is
+ * deliberately distinct from both `sent` and `failed`: a message may well have reached ChatGPT, and
+ * treating uncertainty as failure is what leads to it being sent twice.
+ */
+const DELIVERY_STATES = [
+  'local',
+  'awaiting-send',
+  'sent',
+  'unconfirmed',
+  'delivery-unknown',
+  'prepared-for-astra',
+  'prepared-for-opencode',
+  'prepared-for-powershell',
+  'awaiting-karl-submission',
+  'confirmed-delivered',
+  'failed'
+] as const satisfies readonly CourtMessage['delivery'][]
+const DELIVERY_STATES_SET: ReadonlySet<string> = new Set(DELIVERY_STATES)
 
 /**
  * Normalises text for duplicate detection. Collapses whitespace and case so that re-pasting the same
@@ -115,10 +151,11 @@ export class ConversationService {
       recipient: entry.recipient as CourtMessage['recipient'],
       text: entry.text,
       source: entry.source as MessageSource,
-      delivery: ['local', 'awaiting-send', 'sent', 'unconfirmed', 'prepared-for-astra', 'prepared-for-opencode', 'prepared-for-powershell', 'awaiting-karl-submission', 'confirmed-delivered', 'failed'].includes(String(entry.delivery)) ? entry.delivery as CourtMessage['delivery'] : 'local',
+      delivery: DELIVERY_STATES_SET.has(String(entry.delivery)) ? entry.delivery as CourtMessage['delivery'] : 'local',
       acknowledged: entry.acknowledged === true,
       acknowledgedAt: typeof entry.acknowledgedAt === 'string' ? entry.acknowledgedAt : null,
       externalId: typeof entry.externalId === 'string' && entry.externalId ? entry.externalId.slice(0, 128) : null,
+      turnId: typeof entry.turnId === 'string' && entry.turnId ? entry.turnId.slice(0, 64) : null,
       createdAt: entry.createdAt,
       forwardedFrom: typeof entry.forwardedFrom === 'string' ? entry.forwardedFrom : null
     }
@@ -133,16 +170,30 @@ export class ConversationService {
   }
 
   /**
-   * Duplicate suppression applies to manual composition and to imports of the same text from the same
-   * sender. A forwarded copy is exempt, because forwarding the same message to two recipients is the
-   * intended behaviour and suppressing it would break the feature.
+   * Finds an existing message with the same text from the same sender.
+   *
+   * Scoping by `turnId` matters and was the source of a real bug in the other direction. If identical
+   * text from the same sender were suppressed globally, then Karl asking the same question in two
+   * different turns would silently collapse into one, and the second turn would have no prompt to send.
+   * Within a single turn, though, identical text is genuinely the same message being written twice —
+   * which is exactly what a resend would look like — so it is refused there.
+   *
+   * A message with no turn belongs to manual courtroom composition, where the global suppression was
+   * always the desired behaviour, so those still compare against all other unturned messages.
    */
-  private findDuplicate(text: string, sender: CourtParticipant, forwardedFrom: string | null): CourtMessage | null {
+  private findDuplicate(
+    text: string,
+    sender: CourtParticipant,
+    forwardedFrom: string | null,
+    turnId: string | null = null
+  ): CourtMessage | null {
     if (forwardedFrom) return null
     const key = fingerprint(text, sender)
     for (let index = this.messages.length - 1; index >= 0; index -= 1) {
       const candidate = this.messages[index]
       if (candidate.forwardedFrom) continue
+      // Different turns are different questions, even when the wording is identical.
+      if (candidate.turnId !== turnId) continue
       if (fingerprint(candidate.text, candidate.sender) === key) return candidate
     }
     return null
@@ -169,7 +220,8 @@ export class ConversationService {
       const existing = this.messages.find((message) => message.externalId === externalId)
       if (existing) return { ok: false, reason: 'That message is already in the conversation', duplicate: true, existingId: existing.id }
     }
-    const duplicate = this.findDuplicate(text, sender as CourtParticipant, forwardedFrom)
+    const turnId = typeof input.turnId === 'string' && input.turnId.trim() ? input.turnId.trim().slice(0, 64) : null
+    const duplicate = this.findDuplicate(text, sender as CourtParticipant, forwardedFrom, turnId)
     if (duplicate) return { ok: false, reason: 'That message is already in the conversation', duplicate: true, existingId: duplicate.id }
 
     const createdAt = new Date().toISOString()
@@ -191,6 +243,7 @@ export class ConversationService {
         acknowledged: false,
         acknowledgedAt: null,
         externalId,
+        turnId,
         createdAt,
         forwardedFrom
       }
@@ -211,7 +264,7 @@ export class ConversationService {
   markDelivery(id: unknown, delivery: unknown): { ok: boolean; reason?: string } {
     if (typeof id !== 'string' || !this.messages.some((message) => message.id === id)) return { ok: false, reason: 'No such message' }
     const next = String(delivery)
-    if (!['awaiting-send', 'sent', 'unconfirmed', 'local', 'prepared-for-astra', 'prepared-for-opencode', 'prepared-for-powershell', 'awaiting-karl-submission', 'confirmed-delivered', 'failed'].includes(next)) return { ok: false, reason: 'Unknown delivery state' }
+    if (!DELIVERY_STATES_SET.has(next)) return { ok: false, reason: 'Unknown delivery state' }
     const target = this.messages.find((message) => message.id === id)!
     target.delivery = next as CourtMessage['delivery']
     try { this.persist() } catch { return { ok: false, reason: 'The conversation could not be saved' } }
