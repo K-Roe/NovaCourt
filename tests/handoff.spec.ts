@@ -48,10 +48,12 @@ test('M4 Astra handoff copies, never claims delivery, and imports only on confir
     expect(await page.evaluate(() => window.novaCourt.readClipboard())).toBe('Astra, what do you think of Nova’s proposal?')
 
     // CRITICAL: a copy is not a delivery. Nothing may claim otherwise before Karl says so.
+    // The message is now marked as 'prepared-for-astra' (clipboard preparation), not 'local'.
+    // This accurately reflects that the text is on the clipboard ready for Karl to paste.
     const pending = (await page.evaluate(() => window.novaCourt.getCourtMessages())).find((m) => m.id === message.id)!
-    expect(pending.delivery).toBe('local')
+    expect(pending.delivery).toBe('prepared-for-astra')
     expect(pending.acknowledged).toBe(false)
-    await expect(page.locator('.tag-delivery-local').first()).toContainText('NOT SENT BY NOVACOURT')
+    await expect(page.locator('.tag-delivery-prepared-for-astra').first()).toContainText('PREPARED FOR ASTRA')
     await expect(page.locator('.tag-ack')).toHaveCount(0)
 
     // Karl's explicit confirmation is the only thing that can mark it sent.
@@ -63,7 +65,8 @@ test('M4 Astra handoff copies, never claims delivery, and imports only on confir
     expect(confirmed.text).toBe(pending.text)
     expect(confirmed.sender).toBe(pending.sender)
     expect(confirmed.source).toBe(pending.source)
-    expect(confirmed.delivery).toBe('local')
+    // Delivery remains 'prepared-for-astra' - confirmation only sets acknowledged flag.
+    expect(confirmed.delivery).toBe('prepared-for-astra')
 
     // Import Astra Reply: reads the clipboard only on the click, and previews before saving.
     await page.evaluate(() => window.novaCourt.writeClipboard('I think the plan is sound, but narrow the scope before anyone builds it.'))
@@ -211,7 +214,7 @@ test('M4 pausing blocks handoffs and the record stays append-only across a resta
     await expect(page.getByTestId('court-message')).toHaveCount(2)
     // The acknowledgement and handoff annotations survived; the handoff itself did not.
     const stored = JSON.parse(readFileSync(resolve(userData, 'conversation.json'), 'utf8')) as { text: string; acknowledged: boolean; delivery: string }[]
-    expect(stored.find((m) => m.text.includes('narrower scope'))?.delivery).toBe('local')
+    expect(stored.find((m) => m.text.includes('narrower scope'))?.delivery).toBe('prepared-for-astra')
     expect(stored.find((m) => m.text.includes('hold off'))?.acknowledged).toBe(false)
     expect(await page.evaluate(() => window.novaCourt.getHandoffState())).toMatchObject({ status: 'idle', messageId: null })
   } finally { await app.app.close() }

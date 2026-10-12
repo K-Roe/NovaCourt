@@ -43,6 +43,8 @@
 .court-thread-note{font-size:9px;color:#8d8394;letter-spacing:.02em}
 .court-thread-collapse{width:24px;height:24px;display:grid;place-items:center;border:1px solid #4a3f57;border-radius:6px;background:#262231;color:#c9a6eb}
 .court-thread-collapse:hover{background:#332c42}
+.court-thread-maximise{width:24px;height:24px;display:grid;place-items:center;border:1px solid #4a3f57;border-radius:6px;background:#262231;color:#c9a6eb}
+.court-thread-maximise:hover{background:#332c42}
 .court-thread-collapsed-preview{flex:1;display:flex;align-items:center;gap:8px;min-width:0;font-size:11px;color:#9a90a3;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .court-thread-list{flex:1;min-height:0;overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:11px}
 .court-thread-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#8d8394;padding:16px}
@@ -135,3 +137,29 @@
 .court-terminal-trust-toggle{position:absolute;top:5px;right:6px;border:0;background:transparent;color:#c49a78;font-size:8px;font-weight:800;text-decoration:underline;cursor:pointer;padding:0}
 .court-terminal-trust-collapsed{flex:none;margin:3px 10px 6px;padding:5px 8px;border:1px solid #74503a;border-radius:7px;color:#e7b995;background:#34251f;font-size:9px;font-weight:800;letter-spacing:.03em;text-align:left;cursor:pointer}.court-terminal-workspace{flex:none;padding:2px 12px 7px;color:#9a8f9a;font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.court-terminal-controls{flex:none;display:flex;gap:5px;padding:0 10px 9px}.court-terminal-controls button{flex:1;min-width:0;border:1px solid #665044;border-radius:6px;background:#322923;color:#efbd92;padding:6px 2px;font-size:9px;font-weight:700}.court-terminal-controls button:disabled{opacity:.4}.court-terminal-screen{flex:1;min-height:0;min-width:0;margin:0 8px 5px;padding:6px;background:#11131b;border:1px solid #3e3840;border-radius:8px;overflow:hidden}.court-terminal-screen .xterm{height:100%}.court-terminal-foot{flex:none;padding:4px 11px 8px;color:#847d87;font-size:9px}.court-terminal-error{flex:none;margin:0 10px 8px;padding:7px;border-radius:6px;background:#512b2b;color:#f2b1aa;font-size:10px;overflow-wrap:anywhere}
 .court-terminal-loading{flex:1;display:grid;place-items:center;color:#b99d8c;font-size:11px}
+
+/* Discussion management UI */
+.court-discussion-bar{flex:none;padding:9px 12px;border-bottom:1px solid #322c3a;background:#1e1b27}
+.court-discussion-status{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.discussion-state{font-size:8px;font-weight:800;letter-spacing:.1em;padding:4px 7px;border-radius:5px;background:#2a2533;color:#9b91a6}
+.discussion-state.is-ready{background:#1f3a35;color:#7fd0bb}
+.discussion-state.is-awaiting-astra{background:#4a3a63;color:#dbb5ff}
+.discussion-state.is-awaiting-nova{background:#6a4526;color:#ffc48d}
+.discussion-state.is-awaiting-karl{background:#453318;color:#e9c07f}
+.discussion-state.is-paused{background:#33303c;color:#b6aec2}
+.discussion-state.is-completed{background:#2f5a52;color:#91e5ed}
+.discussion-state.is-error{background:#4a2724;color:#f0a89a}
+.discussion-turn{font-size:9px;color:#c9a6eb}
+.discussion-turn strong{color:#f2e9dc}
+.discussion-topic{font-size:9px;color:#8b8191;font-style:italic}
+.court-discussion-controls{display:flex;gap:6px;flex-wrap:wrap}
+.court-discussion-controls button{display:inline-flex;align-items:center;gap:5px;border:1px solid #7a4f38;border-radius:6px;background:#4b3227;color:#f6c398;font-size:9px;font-weight:800;padding:5px 9px;cursor:pointer}
+.court-discussion-controls button:hover{background:#5a3d2e}
+.court-discussion-controls button:disabled{opacity:.4;cursor:not-allowed}
+.court-discussion-controls .end-discussion{border-color:#6d4038;background:#3a2320;color:#f0b4a1}
+.awaiting-karl-badge{display:inline-flex;align-items:center;gap:5px;font-size:9px;color:#e9c07f}
+.discussion-turn-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 6px;border-radius:4px;font-size:7px;font-weight:800;letter-spacing:.07em;background:#4a3a63;color:#dbb5ff}
+.court-discussion-start{flex:none;padding:10px 12px;border-top:1px solid #322c3a;background:#1a1822;display:flex;align-items:center;gap:10px}
+.court-discussion-start button{display:inline-flex;align-items:center;gap:5px;border:1px solid #7a4f38;border-radius:6px;background:#4b3227;color:#f6c398;font-size:9px;font-weight:800;padding:6px 10px;cursor:pointer}
+.court-discussion-start button:disabled{opacity:.4;cursor:not-allowed}
+.discussion-hint{font-size:9px;color:#8d8394;flex:1}

@@ -5,15 +5,16 @@ import { pathToFileURL } from 'node:url'
 import { OpenCodeService, validWorkspace } from './openCodeService.cjs'
 import { ConversationService } from './conversationService.cjs'
 import { HandoffService } from './handoffService.cjs'
+import { DiscussionService } from './discussionService.cjs'
 import { PortraitService } from './portraitService.cjs'
 import { TerminalService } from './terminalService.cjs'
 
 type PanelWidths = { karl: number; astra: number; nova: number }
-type Settings = { panelWidths: PanelWidths }
+type Settings = { panelWidths: PanelWidths; threadHeight?: number }
 type ViewRequest = { visible: boolean; rect: { x: number; y: number; width: number; height: number }; zoom: number }
 type AstraStatus = { source: 'fixture' | 'chatgpt'; phase: 'loading' | 'open' | 'sign-in-page' | 'offline' | 'error' | 'blocked'; detail: string }
 
-const defaultSettings: Settings = { panelWidths: { karl: 34, astra: 35, nova: 31 } }
+const defaultSettings: Settings = { panelWidths: { karl: 34, astra: 35, nova: 31 }, threadHeight: 320 }
 const chatGptUrl = 'https://chatgpt.com/'
 const fixtureMode = process.env.NC_V2_ASTRA_FIXTURE === '1'
 const allowedHosts = new Set(['chatgpt.com', 'auth.openai.com', 'openai.com', 'accounts.google.com', 'appleid.apple.com', 'login.live.com', 'login.microsoftonline.com'])
@@ -26,6 +27,7 @@ let terminalService: TerminalService | null = null
 let portraitService: PortraitService | null = null
 let conversationService: ConversationService | null = null
 let handoffService: HandoffService | null = null
+let discussionService: DiscussionService | null = null
 let astraStatus: AstraStatus = fixtureMode
   ? { source: 'fixture', phase: 'loading', detail: 'Loading local fixture' }
   : { source: 'chatgpt', phase: 'loading', detail: 'Loading chatgpt.com' }
@@ -42,7 +44,7 @@ function validWidths(value: unknown): value is PanelWidths {
 function loadSettings(): Settings {
   try {
     const parsed = JSON.parse(readFileSync(settingsPath(), 'utf8')) as Partial<Settings>
-    if (validWidths(parsed.panelWidths)) return { panelWidths: parsed.panelWidths }
+    if (validWidths(parsed.panelWidths)) return { panelWidths: parsed.panelWidths, threadHeight: typeof parsed.threadHeight === 'number' && Number.isFinite(parsed.threadHeight) && parsed.threadHeight >= 120 ? parsed.threadHeight : defaultSettings.threadHeight }
   } catch { /* First launch or invalid settings use safe defaults. */ }
   return defaultSettings
 }
@@ -157,6 +159,9 @@ function createWindow() {
   conversationService = new ConversationService(app.getPath('userData'), (messages) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('court:messages', messages)
   })
+  discussionService = new DiscussionService(app.getPath('userData'), (discussion, turns) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('discussion:state', { discussion, turns })
+  })
   handoffService = new HandoffService((state) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('handoff:state', state)
   })
@@ -208,8 +213,19 @@ function createWindow() {
   ipcMain.handle('settings:read', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return loadSettings() })
   ipcMain.handle('settings:saveWidths', (event, value: unknown) => {
     if (!trustedSender(event)) throw new Error('Untrusted sender')
-    if (!validWidths(value)) throw new Error('Invalid panel widths')
-    const settings = { panelWidths: value }
+    if (!value || typeof value !== 'object') throw new Error('Invalid settings')
+    const input = value as Record<string, unknown>
+    let widths: PanelWidths
+    let threadHeight = defaultSettings.threadHeight
+    if ('panelWidths' in input && input.panelWidths && typeof input.panelWidths === 'object') {
+      const pw = input.panelWidths as Record<string, unknown>
+      widths = { karl: pw.karl, astra: pw.astra, nova: pw.nova } as PanelWidths
+      threadHeight = typeof input.threadHeight === 'number' && Number.isFinite(input.threadHeight) && input.threadHeight >= 120 ? input.threadHeight : defaultSettings.threadHeight
+    } else {
+      widths = { karl: input.karl, astra: input.astra, nova: input.nova } as PanelWidths
+    }
+    if (!validWidths(widths)) throw new Error('Invalid panel widths')
+    const settings = { panelWidths: widths, threadHeight }
     saveSettings(settings)
     return settings
   })
@@ -294,6 +310,50 @@ function createWindow() {
   ipcMain.on('handoff:pause', (event, paused: unknown) => { if (!trustedSender(event)) return; if (paused === true) handoffService?.pause(); else handoffService?.resume() })
   ipcMain.handle('handoff:cancel', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return handoffService?.cancel() })
 
+  // Discussion management. Karl controls the three-way conversation flow.
+  ipcMain.handle('discussion:start', (event, input: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!discussionService) throw new Error('Discussion service is unavailable')
+    const result = discussionService.start(input as { topic: unknown; maxTurns?: unknown; participants?: unknown })
+    if (!result.ok) throw new Error(result.reason)
+    return result.discussion
+  })
+  ipcMain.handle('discussion:nextTurn', (event) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!discussionService) throw new Error('Discussion service is unavailable')
+    const result = discussionService.nextTurn()
+    if (!result.ok) throw new Error(result.reason)
+    return { discussion: result.discussion, turn: result.turn }
+  })
+  ipcMain.handle('discussion:pause', (event) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!discussionService) throw new Error('Discussion service is unavailable')
+    const result = discussionService.pause()
+    if (!result.ok) throw new Error(result.reason)
+    return result.discussion
+  })
+  ipcMain.handle('discussion:resume', (event) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!discussionService) throw new Error('Discussion service is unavailable')
+    const result = discussionService.resume()
+    if (!result.ok) throw new Error(result.reason)
+    return result.discussion
+  })
+  ipcMain.handle('discussion:end', (event) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!discussionService) throw new Error('Discussion service is unavailable')
+    const result = discussionService.end()
+    if (!result.ok) throw new Error(result.reason)
+    return result.discussion
+  })
+  ipcMain.handle('discussion:state', (event) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!discussionService) throw new Error('Discussion service is unavailable')
+    const snapshot = discussionService.snapshot()
+    const active = snapshot.discussions.find((d) => d.state !== 'completed' && d.state !== 'idle' && d.state !== 'error') ?? null
+    return { discussion: active, turns: snapshot.turns }
+  })
+
   // Clipboard helpers. The clipboard is read ONLY on an explicit click of "Import Astra Reply", and
   // written only on an explicit copy action. Nothing here runs on a timer or on receipt of a message.
   ipcMain.handle('handoff:writeClipboard', (event, text: unknown) => {
@@ -315,8 +375,8 @@ function createWindow() {
     const prepared = handoffService.prepare('astra', message.id, 'Preparing a copy for Astra.')
     if (!prepared.ok) throw new Error(prepared.reason)
     clipboard.writeText(message.text)
-    // Deliberately NOT a delivery. NovaCourt cannot see ChatGPT, so the message stays `local` and the
-    // workflow waits for Karl to send it himself and then confirm.
+    // Mark as prepared for Astra (clipboard delivery)
+    conversationService.markDelivery(message.id, 'prepared-for-astra')
     handoffService.awaitingKarl(message.id, 'Copied to your clipboard. Paste it into ChatGPT and send it there, then press “I sent this in ChatGPT”.')
     return handoffService.snapshot()
   })
@@ -339,6 +399,47 @@ function createWindow() {
     // the terminal himself, which keeps the terminal's trust boundary exactly where M3.1 left it.
     clipboard.writeText(message.text)
     return { copied: true, notice: 'Copied. Paste it into the terminal yourself — NovaCourt never writes to a terminal.' }
+  })
+
+  ipcMain.handle('handoff:prepareForTerminal', (event, input: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!conversationService || !terminalService) throw new Error('Terminal preparation unavailable')
+    const { messageId, mode } = input as { messageId: string; mode: 'opencode' | 'powershell' }
+    const message = conversationService.snapshot().find((entry) => entry.id === messageId)
+    if (!message) throw new Error('No such message')
+    if (mode !== 'opencode' && mode !== 'powershell') throw new Error('Invalid terminal mode')
+    // Check if the requested terminal mode is currently running
+    const termState = terminalService.snapshot()
+    if (termState.mode !== mode || termState.status !== 'running') {
+      return { ok: false, reason: `${mode === 'opencode' ? 'OpenCode' : 'PowerShell'} terminal is not running. Start it first.` }
+    }
+    // Sanitize text for safe terminal preparation: replace newlines with spaces to prevent
+    // accidental multi-command execution. The text is placed in the shell's input buffer
+    // waiting for Karl to press Enter. It is NOT executed automatically.
+    const sanitized = message.text.replace(/\r?\n/g, ' ').trim()
+    if (!sanitized) {
+      return { ok: false, reason: 'Message is empty after sanitization' }
+    }
+    // Write to the PTY - this places text in the shell's input line, NOT executing it.
+    // The shell's line editor will display it and wait for Enter.
+    terminalService.write(termState.id, sanitized)
+    // Update delivery status
+    const deliveryStatus = mode === 'opencode' ? 'prepared-for-opencode' : 'prepared-for-powershell'
+    conversationService.markDelivery(message.id, deliveryStatus)
+    return { ok: true, text: sanitized, deliveryStatus }
+  })
+
+  ipcMain.handle('handoff:prepareForAstra', (event, id: unknown) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    if (!handoffService || !conversationService) throw new Error('Handoffs are unavailable')
+    const message = conversationService.snapshot().find((entry) => entry.id === id)
+    if (!message) throw new Error('No such message')
+    // For Astra, we can only prepare via clipboard - Electron cannot safely inject into WebContentsView
+    // without weakening security (no JS injection, no scraping, preserve sandbox)
+    clipboard.writeText(message.text)
+    conversationService.markDelivery(message.id, 'prepared-for-astra')
+    handoffService.awaitingKarl(message.id, 'Prepared for Astra. Text is on your clipboard. Paste into ChatGPT and send manually.')
+    return handoffService.snapshot()
   })
 
   ipcMain.handle('handoff:sendToNova', async (event, id: unknown) => {
@@ -411,6 +512,29 @@ function createWindow() {
     publishAstraStatus('loading', fixtureMode ? 'Loading local fixture' : 'Loading chatgpt.com')
     void view.webContents.loadURL(fixtureMode ? fixtureUrl : chatGptUrl)
   })
+  ipcMain.handle('astra:paste', async (event) => {
+    if (!trustedSender(event)) throw new Error('Untrusted sender')
+    const view = views.get('astra')
+    if (!view || view.webContents.isDestroyed()) return { attempted: false, reason: 'Astra view not available' }
+    const url = view.webContents.getURL()
+    if (!url.startsWith('https://chatgpt.com/') || url.includes('/auth/') || url.includes('/login') || url.includes('/signin')) {
+      return { attempted: false, reason: 'Astra is not on the ChatGPT chat page (sign-in or unexpected navigation)' }
+    }
+    try {
+      view.webContents.focus()
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      view.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Control', modifiers: ['control'] })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      view.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'KeyV', modifiers: ['control'] })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      view.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'KeyV', modifiers: ['control'] })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      view.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Control', modifiers: ['control'] })
+      return { attempted: true, reason: 'Paste keyboard events sent to Astra WebContentsView' }
+    } catch (error) {
+      return { attempted: false, reason: error instanceof Error ? error.message : String(error) }
+    }
+  })
   if (process.env.NC_V2_TEST === '1') ipcMain.handle('test:viewBounds', (event) => { if (!trustedSender(event)) throw new Error('Untrusted sender'); return { bounds: lastBounds, attached, registered: views.has('astra') } })
 
   window.on('resize', () => window.webContents.send('window:resize'))
@@ -424,6 +548,8 @@ function createWindow() {
     conversationService = null
     handoffService?.close()
     handoffService = null
+    discussionService?.close()
+    discussionService = null
     novaService?.close()
     novaService = null
     for (const view of views.values()) if (!view.webContents.isDestroyed()) view.webContents.close()

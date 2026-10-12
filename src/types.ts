@@ -1,5 +1,5 @@
 export type PanelWidths = { karl: number; astra: number; nova: number }
-export type Settings = { panelWidths: PanelWidths }
+export type Settings = { panelWidths: PanelWidths; threadHeight: number }
 export type ViewRequest = { visible: boolean; rect: { x: number; y: number; width: number; height: number }; zoom: number }
 export type AstraStatus = { source: 'fixture' | 'chatgpt'; phase: 'loading' | 'open' | 'sign-in-page' | 'offline' | 'error' | 'blocked'; detail: string }
 export type NovaState = {
@@ -16,7 +16,30 @@ export type NovaState = {
   deliveryUncertain: boolean
 }
 export type CourtParticipant = 'karl' | 'astra' | 'nova'
-export type CourtRecipient = CourtParticipant | 'court'
+export type CourtRecipient = CourtParticipant | 'court' | 'both'
+export type DiscussionTurn = 'karl' | 'astra' | 'nova'
+export type DiscussionState = 'idle' | 'ready' | 'awaiting-astra' | 'awaiting-nova' | 'awaiting-karl' | 'paused' | 'completed' | 'error'
+export type DiscussionTurnRecord = {
+  id: string
+  discussionId: string
+  turn: number
+  speaker: DiscussionTurn
+  recipient: CourtRecipient
+  messageId: string | null
+  createdAt: string
+}
+export type Discussion = {
+  id: string
+  topic: string
+  maxTurns: number
+  state: DiscussionState
+  currentTurn: DiscussionTurn | null
+  turnCount: number
+  participants: DiscussionTurn[]
+  createdAt: string
+  updatedAt: string
+  completedAt: string | null
+}
 export type CourtMessage = {
   id: string
   caseRef: string | null
@@ -24,7 +47,7 @@ export type CourtMessage = {
   recipient: CourtRecipient
   text: string
   source: 'manual' | 'imported' | 'connected'
-  delivery: 'local' | 'awaiting-send' | 'sent' | 'unconfirmed'
+  delivery: 'local' | 'awaiting-send' | 'sent' | 'unconfirmed' | 'prepared-for-astra' | 'prepared-for-opencode' | 'prepared-for-powershell' | 'awaiting-karl-submission' | 'confirmed-delivered' | 'failed'
   acknowledged: boolean
   acknowledgedAt: string | null
   externalId: string | null
@@ -73,7 +96,7 @@ declare global {
   interface Window {
     novaCourt: {
       readSettings: () => Promise<Settings>
-      saveWidths: (widths: PanelWidths) => Promise<Settings>
+      saveWidths: (widths: Settings) => Promise<Settings>
       setAstraBounds: (request: ViewRequest) => void
       onWindowResize: (callback: () => void) => () => void
       readAstraStatus: () => Promise<AstraStatus>
@@ -114,6 +137,9 @@ declare global {
       copyForAstra: (id: string) => Promise<HandoffState>
       confirmAstraSent: (id: string) => Promise<CourtMessage[]>
       copyForTerminal: (id: string) => Promise<{ copied: boolean; notice: string }>
+      prepareForTerminal: (messageId: string, mode: TerminalMode) => Promise<{ ok: boolean; text?: string; deliveryStatus?: string; reason?: string }>
+      prepareForAstra: (id: string) => Promise<HandoffState>
+      pasteToAstra: () => Promise<{ attempted: boolean; reason: string }>
       sendToNova: (id: string) => Promise<HandoffState>
       getPortraits: () => Promise<PortraitState[]>
       onPortraitState: (callback: (state: PortraitState) => void) => () => void
@@ -122,6 +148,13 @@ declare global {
       framePortrait: (participant: Participant, framing: PortraitFraming) => Promise<PortraitRecord>
       resetPortrait: (participant: Participant) => Promise<PortraitState>
       testViewBounds: () => Promise<{ bounds: ViewRequest['rect'] | null; attached: boolean; registered: boolean }>
+      getDiscussionState: () => Promise<{ discussion: Discussion | null; turns: DiscussionTurnRecord[] }>
+      onDiscussionState: (callback: (state: { discussion: Discussion | null; turns: DiscussionTurnRecord[] }) => void) => () => void
+      startDiscussion: (input: { topic: string; maxTurns?: number; participants?: DiscussionTurn[] }) => Promise<Discussion>
+      nextDiscussionTurn: () => Promise<{ discussion: Discussion; turn: DiscussionTurnRecord | null }>
+      pauseDiscussion: () => Promise<Discussion | null>
+      resumeDiscussion: () => Promise<Discussion | null>
+      endDiscussion: () => Promise<Discussion | null>
     }
   }
 }

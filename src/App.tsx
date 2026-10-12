@@ -7,11 +7,13 @@ import { PortraitProvider } from './portraitStore'
 import { portraitParticipants } from './portraits'
 import NovaPanel from './NovaPanel'
 import PortraitPicker from './PortraitPicker'
+import { NovaViewProvider } from './novaViewContext'
 
 type Page = 'conversation' | 'portraits' | 'settings'
 type Note = { id: string; text: string; createdAt: string }
 const defaults: PanelWidths = { karl: 34, astra: 35, nova: 31 }
 const notesKey = 'novacourt-v2:karl-notes'
+const DEFAULT_THREAD_HEIGHT = 320
 
 function readNotes(): Note[] {
   try {
@@ -33,12 +35,9 @@ function Court() {
   const [page, setPage] = useState<Page>('conversation')
   const [widths, setWidths] = useState<PanelWidths>(defaults)
   const [notes, setNotes] = useState<Note[]>(readNotes)
-  const [threadHeight, setThreadHeight] = useState(240)
-  // The shared conversation starts collapsed. The OpenCode TUI needs roughly thirty rows to render
-  // properly, and giving the conversation half the column by default would leave it unusable — which
-  // the milestone explicitly forbids. The panels therefore keep their full M3.1 height until Karl
-  // deliberately opens the thread.
+  const [threadHeight, setThreadHeight] = useState(DEFAULT_THREAD_HEIGHT)
   const [threadCollapsed, setThreadCollapsed] = useState(true)
+  const [threadMaximised, setThreadMaximised] = useState(false)
   const [draft, setDraft] = useState('')
   const [astraStatus, setAstraStatus] = useState<AstraStatus>({ source: 'chatgpt', phase: 'loading', detail: 'Loading ChatGPT website' })
   const gridRef = useRef<HTMLDivElement>(null)
@@ -56,13 +55,14 @@ function Court() {
     return () => window.removeEventListener('resize', clamp)
   }, [])
 
-  useEffect(() => { void window.novaCourt.readSettings().then((settings) => setWidths(settings.panelWidths)) }, [])
+  useEffect(() => { void window.novaCourt.readSettings().then((settings) => { setWidths(settings.panelWidths); setThreadHeight(settings.threadHeight ?? DEFAULT_THREAD_HEIGHT) }) }, [])
   useEffect(() => {
     const remove = window.novaCourt.onAstraStatus(setAstraStatus)
     void window.novaCourt.readAstraStatus().then(setAstraStatus)
     return remove
   }, [])
   useEffect(() => { localStorage.setItem(notesKey, JSON.stringify(notes)) }, [notes])
+  useEffect(() => { void window.novaCourt.saveWidths({ panelWidths: widths, threadHeight }) }, [widths, threadHeight])
 
   const syncAstra = useCallback(() => {
     const element = astraViewportRef.current
@@ -111,7 +111,7 @@ function Court() {
   function stopResize() {
     if (!resizeRef.current) return
     resizeRef.current = null
-    void window.novaCourt.saveWidths(widths)
+    void window.novaCourt.saveWidths({ panelWidths: widths, threadHeight })
   }
   // Growing or shrinking the shared conversation resizes the three panels above it, which moves
   // Astra's native view. requestAnimationFrame(syncAstra) after every drag frame keeps the WebContents
@@ -131,6 +131,9 @@ function Court() {
     threadResizeRef.current = null
     requestAnimationFrame(syncAstra)
   }
+  function toggleThreadMaximise() {
+    setThreadMaximised((value) => !value)
+  }
   function addNote(event: React.FormEvent) {
     event.preventDefault()
     const text = draft.trim()
@@ -139,8 +142,12 @@ function Court() {
     setDraft('')
     requestAnimationFrame(() => notesEndRef.current?.scrollIntoView({ behavior: 'smooth' }))
   }
-  function resetWidths() { setWidths(defaults); void window.novaCourt.saveWidths(defaults) }
+  function resetWidths() { setWidths(defaults); void window.novaCourt.saveWidths({ panelWidths: defaults, threadHeight: DEFAULT_THREAD_HEIGHT }) }
   const astraLabel: Record<AstraStatus['phase'], string> = { loading: 'LOADING', open: astraStatus.source === 'fixture' ? 'OFFLINE FIXTURE' : 'WEBSITE OPEN', 'sign-in-page': 'SIGN-IN PAGE', offline: 'OFFLINE', error: 'LOAD ERROR', blocked: 'LINK BLOCKED' }
+
+  // Calculate effective thread height: maximised takes most of the screen, respecting min panel height
+  const effectiveThreadHeight = threadMaximised ? maxThreadHeight() : threadHeight
+  const effectiveGridRows = threadCollapsed ? undefined : { gridTemplateRows: `minmax(0, 1fr) 8px ${effectiveThreadHeight}px` }
 
   return <div className="app-shell">
     <header className="app-header">
@@ -154,15 +161,16 @@ function Court() {
     </header>
 
     {page === 'conversation' ? <main className="conversation-screen">
-      <div className="screen-heading"><div><span className="eyebrow">THE CONVERSATION</span><h1>Three seats. One conversation.</h1></div><div className="stage-label"><span className="stage-line"/> M4-V2 · SHARED COURT</div></div>
-      <div className={`court-stage${threadCollapsed ? ' is-collapsed' : ''}`} style={threadCollapsed ? undefined : { gridTemplateRows: `minmax(0, 1fr) 8px ${threadHeight}px` }}>
+      <NovaViewProvider>
+      <div className="screen-heading"><div><span className="eyebrow">THE CONVERSATION</span><h1>Three seats. One conversation.</h1></div><div className="stage-label"><span className="stage-line"/> M5.1 · SHARED COURT</div></div>
+      <div className={`court-stage${threadCollapsed ? ' is-collapsed' : ''}`} style={effectiveGridRows}>
       <div className="court-grid" ref={gridRef} style={{ gridTemplateColumns: `${widths.karl}fr 8px ${widths.astra}fr 8px ${widths.nova}fr` }}>
         <section className="participant-panel karl-panel" aria-label="Karl panel">
           <div className="panel-head"><div className="identity"><Avatar participant="karl" size={34}/><div><div className="seat">LEFT SEAT · THE OWNER</div><h2>Karl</h2></div></div><span className="status ready"><span/> READY</span></div>
           <div className="panel-body karl-body"><div className="thread-label">LOCAL NOTES <span>{notes.length ? `${notes.length} saved` : 'Private to this app'}</span></div>
-            {notes.length === 0 ? <div className="empty-state"><div className="empty-icon"><MessageCircle size={24}/></div><h3>Your conversation starts here.</h3><p>Capture your thoughts in Karl’s seat. Notes stay local; use Nova’s composer to send a discussion message.</p></div> : <div className="note-list">{notes.map((note) => <article className="note" key={note.id}><div className="note-meta"><Avatar participant="karl" size={16}/> KARL · LOCAL NOTE <time>{new Date(note.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p>{note.text}</p></article>)}<div ref={notesEndRef}/></div>}
+            {notes.length === 0 ? <div className="empty-state"><div className="empty-icon"><MessageCircle size={24}/></div><h3>Your conversation starts here.</h3><p>Capture your thoughts in Karl's seat. Notes stay local; use Nova's composer to send a discussion message.</p></div> : <div className="note-list">{notes.map((note) => <article className="note" key={note.id}><div className="note-meta"><Avatar participant="karl" size={16}/> KARL · LOCAL NOTE <time>{new Date(note.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p>{note.text}</p></article>)}<div ref={notesEndRef}/></div>}
           </div>
-          <form className="composer" onSubmit={addNote}><div className="composer-to">SAVE TO <strong>KARL’S LOCAL NOTES</strong><ChevronDown size={13}/></div><div className="composer-input"><textarea aria-label="Write a local note" placeholder="Write a thought for the court..." value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} rows={3}/><button type="submit" aria-label="Save local note" disabled={!draft.trim()}><ArrowUp size={18}/></button></div><div className="composer-hint">Enter to save <span>·</span> Shift + Enter for a new line</div></form>
+          <form className="composer" onSubmit={addNote}><div className="composer-to">SAVE TO <strong>KARL'S LOCAL NOTES</strong><ChevronDown size={13}/></div><div className="composer-input"><textarea aria-label="Write a local note" placeholder="Write a thought for the court..." value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} rows={3}/><button type="submit" aria-label="Save local note" disabled={!draft.trim()}><ArrowUp size={18}/></button></div><div className="composer-hint">Enter to save <span>·</span> Shift + Enter for a new line</div></form>
         </section>
         <div className="divider" role="separator" aria-label="Resize Karl and Astra panels" aria-orientation="vertical" onPointerDown={(event) => startResize('left', event)} onPointerMove={moveResize} onPointerUp={stopResize} onLostPointerCapture={stopResize}><span/></div>
         <section className="participant-panel astra-panel" aria-label="Astra panel"><div className="panel-head"><div className="identity"><Avatar participant="astra" size={34}/><div><div className="seat">MIDDLE SEAT · CHATGPT</div><h2>Astra</h2></div></div><div className="astra-controls"><span className={`status astra-${astraStatus.phase}`} title={astraStatus.detail}><span/> {astraLabel[astraStatus.phase]}</span><button className="astra-retry" type="button" onClick={() => window.novaCourt.retryAstra()} title="Reload ChatGPT website" aria-label="Reload Astra website"><RotateCcw size={14}/></button></div></div><div className="native-viewport" ref={astraViewportRef} data-testid="astra-viewport"/></section>
@@ -170,9 +178,10 @@ function Court() {
         <NovaPanel/>
       </div>
       <div className="divider divider-horizontal" role="separator" aria-label="Resize the shared conversation" aria-orientation="horizontal" onPointerDown={startThreadResize} onPointerMove={moveThreadResize} onPointerUp={stopThreadResize} onLostPointerCapture={stopThreadResize}><span/></div>
-      <CourtConversation height={threadHeight} collapsed={threadCollapsed} onToggle={() => setThreadCollapsed((value) => !value)}/>
+      <CourtConversation height={effectiveThreadHeight} collapsed={threadCollapsed} maximised={threadMaximised} onToggle={() => setThreadCollapsed((value) => !value)} onMaximise={toggleThreadMaximise}/>
       </div>
       <div className="screen-foot"><span><span className="foot-dot"/> A local workspace for Karl</span><span>{astraStatus.source === 'fixture' ? 'Offline fixture for layout tests' : 'ChatGPT is manual · account status is not detected'} · Shared court messages are records, not commands</span></div>
-    </main> : page === 'portraits' ? <main className="settings-screen"><div className="settings-wrap"><span className="eyebrow">THE CAST</span><h1>Who is in the courtroom.</h1><p className="settings-intro">Upload a portrait for Karl, Astra and Nova. Images are stored in NovaCourt’s application data folder on this device, never in the repository. Until an image is uploaded, that seat shows a coloured initial. NovaCourt does not generate a likeness of any person.</p><div className="portrait-grid">{portraitParticipants.map((participant) => <PortraitPicker key={participant} participant={participant}/>)}</div><button className="back-button" onClick={() => setPage('conversation')}>← Back to Conversation</button></div></main> : <main className="settings-screen"><div className="settings-wrap"><span className="eyebrow">PREFERENCES</span><h1>Make room for every voice.</h1><p className="settings-intro">Panel widths are saved on this device. ChatGPT opens in a dedicated persistent Electron session; sign in manually in Astra’s panel. The app does not read your account or conversations.</p><div className="setting-card"><div><h2>Conversation layout</h2><p>Drag either divider on the Conversation screen to change panel widths.</p><div className="width-values"><span>Karl {Math.round(widths.karl)}%</span><span>Astra {Math.round(widths.astra)}%</span><span>Nova {Math.round(widths.nova)}%</span></div></div><button onClick={resetWidths}><RotateCcw size={15}/> Reset widths</button></div><button className="back-button" onClick={() => setPage('conversation')}>← Back to Conversation</button></div></main>}
+      </NovaViewProvider>
+    </main> : page === 'portraits' ? <main className="settings-screen"><div className="settings-wrap"><span className="eyebrow">THE CAST</span><h1>Who is in the courtroom.</h1><p className="settings-intro">Upload a portrait for Karl, Astra and Nova. Images are stored in NovaCourt's application data folder on this device, never in the repository. Until an image is uploaded, that seat shows a coloured initial. NovaCourt does not generate a likeness of any person.</p><div className="portrait-grid">{portraitParticipants.map((participant) => <PortraitPicker key={participant} participant={participant}/>)}</div><button className="back-button" onClick={() => setPage('conversation')}>← Back to Conversation</button></div></main> : <main className="settings-screen"><div className="settings-wrap"><span className="eyebrow">PREFERENCES</span><h1>Make room for every voice.</h1><p className="settings-intro">Panel widths are saved on this device. ChatGPT opens in a dedicated persistent Electron session; sign in manually in Astra's panel. The app does not read your account or conversations.</p><div className="setting-card"><div><h2>Conversation layout</h2><p>Drag either divider on the Conversation screen to change panel widths.</p><div className="width-values"><span>Karl {Math.round(widths.karl)}%</span><span>Astra {Math.round(widths.astra)}%</span><span>Nova {Math.round(widths.nova)}%</span></div></div><button onClick={resetWidths}><RotateCcw size={15}/> Reset widths</button></div><button className="back-button" onClick={() => setPage('conversation')}>← Back to Conversation</button></div></main>}
   </div>
 }

@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { ArrowUp, CircleStop, Plus, RotateCcw, Settings2, ShieldCheck, WifiOff } from 'lucide-react'
 import Avatar from './Avatar'
 import type { NovaState } from './types'
+import { useNovaView } from './novaViewContext'
 
 const TerminalPanel = lazy(() => import('./TerminalPanel'))
 
@@ -9,9 +10,9 @@ const initial: NovaState = { connection: 'disconnected', error: null, version: n
 const labels = { disconnected: 'DISCONNECTED', connecting: 'CONNECTING', connected: 'CONNECTED', error: 'ERROR' }
 
 export default function NovaPanel() {
+  const { view, setView } = useNovaView()
   const [state, setState] = useState<NovaState>(initial)
   const [draft, setDraft] = useState('')
-  const [view, setView] = useState<'opencode' | 'powershell' | 'chat'>('chat')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [form, setForm] = useState({ endpoint: initial.config.endpoint, executablePath: '', workspace: '' })
   const [actionError, setActionError] = useState<string | null>(null)

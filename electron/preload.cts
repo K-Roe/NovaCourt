@@ -68,6 +68,9 @@ contextBridge.exposeInMainWorld('novaCourt', {
   copyForAstra: (id: unknown) => ipcRenderer.invoke('handoff:copyForAstra', id),
   confirmAstraSent: (id: unknown) => ipcRenderer.invoke('handoff:confirmAstraSent', id),
   copyForTerminal: (id: unknown) => ipcRenderer.invoke('handoff:copyForTerminal', id),
+  prepareForTerminal: (messageId: string, mode: 'opencode' | 'powershell') => ipcRenderer.invoke('handoff:prepareForTerminal', { messageId, mode }),
+  prepareForAstra: (id: unknown) => ipcRenderer.invoke('handoff:prepareForAstra', id),
+  pasteToAstra: () => ipcRenderer.invoke('astra:paste'),
   sendToNova: (id: unknown) => ipcRenderer.invoke('handoff:sendToNova', id),
   acknowledgeCourtMessage: (id: unknown) => ipcRenderer.invoke('court:acknowledge', id),
   getPortraits: () => ipcRenderer.invoke('portrait:list'),
@@ -82,5 +85,16 @@ contextBridge.exposeInMainWorld('novaCourt', {
   resetPortrait: (participant: unknown) => ipcRenderer.invoke('portrait:reset', participant),
   writeTerminal: (id: unknown, data: unknown) => ipcRenderer.send('terminal:write', id, data),
   resizeTerminal: (id: unknown, size: unknown) => ipcRenderer.send('terminal:resize', id, size),
-  testViewBounds: () => ipcRenderer.invoke('test:viewBounds')
+  testViewBounds: () => ipcRenderer.invoke('test:viewBounds'),
+  startDiscussion: (input: unknown) => ipcRenderer.invoke('discussion:start', input),
+  nextDiscussionTurn: () => ipcRenderer.invoke('discussion:nextTurn'),
+  pauseDiscussion: () => ipcRenderer.invoke('discussion:pause'),
+  resumeDiscussion: () => ipcRenderer.invoke('discussion:resume'),
+  endDiscussion: () => ipcRenderer.invoke('discussion:end'),
+  getDiscussionState: () => ipcRenderer.invoke('discussion:state'),
+  onDiscussionState: (callback: (state: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
+    ipcRenderer.on('discussion:state', listener)
+    return () => ipcRenderer.removeListener('discussion:state', listener)
+  }
 })

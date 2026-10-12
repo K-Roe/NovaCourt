@@ -25,7 +25,7 @@ export type CourtMessage = {
   recipient: CourtParticipant | 'court'
   text: string
   source: MessageSource
-  delivery: 'local' | 'awaiting-send' | 'sent' | 'unconfirmed'
+  delivery: 'local' | 'awaiting-send' | 'sent' | 'unconfirmed' | 'prepared-for-astra' | 'prepared-for-opencode' | 'prepared-for-powershell' | 'awaiting-karl-submission' | 'confirmed-delivered' | 'failed'
   /**
    * Set only by Karl, and only for a message he copied out to ChatGPT and then sent himself.
    * NovaCourt never sets it, because NovaCourt never sends anything into ChatGPT. A copied message
@@ -59,8 +59,9 @@ export type AppendResult = { ok: true; message: CourtMessage } | { ok: false; re
 
 const MAX_TEXT = 8000
 const MAX_MESSAGES = 2000
-const RECIPIENTS = ['karl', 'astra', 'nova', 'court']
+const RECIPIENTS = ['karl', 'astra', 'nova', 'court', 'both']
 const SENDERS = ['karl', 'astra', 'nova']
+const AGENT_RECIPIENTS = ['astra', 'nova'] as const satisfies CourtMessage['recipient'][]
 
 /**
  * Normalises text for duplicate detection. Collapses whitespace and case so that re-pasting the same
@@ -114,7 +115,7 @@ export class ConversationService {
       recipient: entry.recipient as CourtMessage['recipient'],
       text: entry.text,
       source: entry.source as MessageSource,
-      delivery: ['local', 'awaiting-send', 'sent', 'unconfirmed'].includes(String(entry.delivery)) ? entry.delivery as CourtMessage['delivery'] : 'local',
+      delivery: ['local', 'awaiting-send', 'sent', 'unconfirmed', 'prepared-for-astra', 'prepared-for-opencode', 'prepared-for-powershell', 'awaiting-karl-submission', 'confirmed-delivered', 'failed'].includes(String(entry.delivery)) ? entry.delivery as CourtMessage['delivery'] : 'local',
       acknowledged: entry.acknowledged === true,
       acknowledgedAt: typeof entry.acknowledgedAt === 'string' ? entry.acknowledgedAt : null,
       externalId: typeof entry.externalId === 'string' && entry.externalId ? entry.externalId.slice(0, 128) : null,
@@ -171,25 +172,35 @@ export class ConversationService {
     const duplicate = this.findDuplicate(text, sender as CourtParticipant, forwardedFrom)
     if (duplicate) return { ok: false, reason: 'That message is already in the conversation', duplicate: true, existingId: duplicate.id }
 
-    const message: CourtMessage = {
-      id: randomUUID(),
-      caseRef: typeof input.caseRef === 'string' && input.caseRef.trim() ? input.caseRef.trim().slice(0, 64) : null,
-      sender: sender as CourtParticipant,
-      recipient: recipient as CourtMessage['recipient'],
-      text,
-      source: source as MessageSource,
-      delivery: ['local', 'awaiting-send', 'sent', 'unconfirmed'].includes(String(input.delivery)) ? input.delivery as CourtMessage['delivery'] : source === 'manual' ? 'local' : 'awaiting-send',
-      acknowledged: false,
-      acknowledgedAt: null,
-      externalId: typeof input.externalId === 'string' && input.externalId.trim() ? input.externalId.trim().slice(0, 128) : null,
-      createdAt: new Date().toISOString(),
-      forwardedFrom
+    const createdAt = new Date().toISOString()
+    const caseRef = typeof input.caseRef === 'string' && input.caseRef.trim() ? input.caseRef.trim().slice(0, 64) : null
+    const delivery = ['local', 'awaiting-send', 'sent', 'unconfirmed'].includes(String(input.delivery)) ? input.delivery as CourtMessage['delivery'] : source === 'manual' ? 'local' : 'awaiting-send'
+
+    const targetRecipients = recipient === 'both' ? (AGENT_RECIPIENTS as CourtMessage['recipient'][]) : [recipient as CourtMessage['recipient']]
+    const results: CourtMessage[] = []
+
+    for (const targetRecipient of targetRecipients) {
+      const message: CourtMessage = {
+        id: randomUUID(),
+        caseRef,
+        sender: sender as CourtParticipant,
+        recipient: targetRecipient,
+        text,
+        source: source as MessageSource,
+        delivery,
+        acknowledged: false,
+        acknowledgedAt: null,
+        externalId,
+        createdAt,
+        forwardedFrom
+      }
+      this.messages.push(message)
+      results.push(message)
     }
-    this.messages.push(message)
     if (this.messages.length > MAX_MESSAGES) this.messages = this.messages.slice(-MAX_MESSAGES)
-    try { this.persist() } catch { this.messages = this.messages.filter((entry) => entry.id !== message.id); return { ok: false, reason: 'The conversation could not be saved', duplicate: false, existingId: null } }
+    try { this.persist() } catch { this.messages = this.messages.filter((entry) => !results.some((r) => r.id === entry.id)); return { ok: false, reason: 'The conversation could not be saved', duplicate: false, existingId: null } }
     this.publish(this.snapshot())
-    return { ok: true, message: { ...message } }
+    return { ok: true, message: results[0] }
   }
 
   /**
@@ -200,7 +211,7 @@ export class ConversationService {
   markDelivery(id: unknown, delivery: unknown): { ok: boolean; reason?: string } {
     if (typeof id !== 'string' || !this.messages.some((message) => message.id === id)) return { ok: false, reason: 'No such message' }
     const next = String(delivery)
-    if (!['awaiting-send', 'sent', 'unconfirmed', 'local'].includes(next)) return { ok: false, reason: 'Unknown delivery state' }
+    if (!['awaiting-send', 'sent', 'unconfirmed', 'local', 'prepared-for-astra', 'prepared-for-opencode', 'prepared-for-powershell', 'awaiting-karl-submission', 'confirmed-delivered', 'failed'].includes(next)) return { ok: false, reason: 'Unknown delivery state' }
     const target = this.messages.find((message) => message.id === id)!
     target.delivery = next as CourtMessage['delivery']
     try { this.persist() } catch { return { ok: false, reason: 'The conversation could not be saved' } }
